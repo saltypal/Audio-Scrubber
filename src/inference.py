@@ -4,6 +4,10 @@ import soundfile as sf
 import numpy as np
 import sys
 from pathlib import Path
+
+# Add parent directory to path for config import
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import Paths, AudioSettings
 from model.neuralnet import UNet1D
 
 """
@@ -19,16 +23,21 @@ class Denoiser:
     """
     Audio denoiser using trained 1D U-Net model.
     """
-    def __init__(self, model_path, device='cpu'):
+    def __init__(self, model_path=None, device='cpu'):
         """
         Initialize the denoiser.
         
         Args:
-            model_path: Path to the trained model checkpoint
+            model_path: Path to the trained model checkpoint (default: uses config)
             device: 'cuda' or 'cpu'
         """
+        # Use config default if not specified
+        if model_path is None:
+            model_path = str(Paths.MODEL_BEST)
+        
         self.device = torch.device(device)
         self.model = UNet1D(in_channels=1, out_channels=1).to(self.device)
+        self.sample_rate = AudioSettings.SAMPLE_RATE
         
         # Load trained weights
         checkpoint = torch.load(model_path, map_location=self.device)

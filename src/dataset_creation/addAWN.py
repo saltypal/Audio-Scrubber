@@ -1,8 +1,13 @@
-import os 
+import os
+import sys
 import librosa
 import numpy as np
 import soundfile as sf
 from pathlib import Path
+
+# Add parent directory to path for config import
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from config import Paths, NoiseSettings
 
 """
 Created by Satya At 2:23PM with the help of copilot
@@ -15,15 +20,16 @@ https://stackoverflow.com/questions/14058340/adding-noise-to-a-signal-in-python
 
 """
 
-# CLEAN_AUDIO_DIR = r"dataset\instant\clean"
-# OUTPUT_DIR = r"dataset\instant\noisy"
+# Use central config for paths
+CLEAN_AUDIO_DIR = str(Paths.INSTANT_CLEAN)
+OUTPUT_DIR = str(Paths.INSTANT_NOISY)
 
-
-CLEAN_AUDIO_DIR = r"testing"
-OUTPUT_DIR = r"testing"
+# For testing, can override:
+# CLEAN_AUDIO_DIR = r"testing"
+# OUTPUT_DIR = r"testing"
 
 print("We will add noise with Signal To Noise Ratio levels. ")
-NOISE_LEVELS = [0.005, 0.01, 0.02, 0.05, 0.1]
+NOISE_LEVELS = NoiseSettings.NOISE_LEVELS
 
 
 

@@ -3,10 +3,15 @@ import numpy as np
 import sounddevice as sd
 from queue import Queue
 from threading import Thread, Event
-from model.neuralnet import UNet1D
+import sys
 from pathlib import Path
 import soundfile as sf
 import time
+
+# Add parent directory to path for config import
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import Paths, AudioSettings
+from model.neuralnet import UNet1D
 
 """
 Created by Satya with Copilot @ 15/11/25
@@ -22,16 +27,24 @@ class RealTimeDenoiser:
     """
     Real-time audio denoiser with multi-threaded queue architecture.
     """
-    def __init__(self, model_path, chunk_size=4096, sample_rate=22050, device='cpu'):
+    def __init__(self, model_path=None, chunk_size=None, sample_rate=None, device='cpu'):
         """
         Initialize the real-time denoiser.
         
         Args:
-            model_path: Path to trained model checkpoint
-            chunk_size: Size of audio chunks (smaller = lower latency, but more overhead)
-            sample_rate: Audio sample rate
+            model_path: Path to trained model checkpoint (default: uses config)
+            chunk_size: Size of audio chunks (default: uses config)
+            sample_rate: Audio sample rate (default: uses config)
             device: 'cuda' or 'cpu'
         """
+        # Use config defaults if not specified
+        if model_path is None:
+            model_path = str(Paths.MODEL_BEST)
+        if chunk_size is None:
+            chunk_size = AudioSettings.CHUNK_SIZE
+        if sample_rate is None:
+            sample_rate = AudioSettings.SAMPLE_RATE
+        
         self.chunk_size = chunk_size
         self.sample_rate = sample_rate
         self.device = torch.device(device)

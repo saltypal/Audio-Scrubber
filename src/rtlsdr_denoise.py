@@ -3,10 +3,15 @@ import numpy as np
 import sounddevice as sd
 from queue import Queue
 from threading import Thread, Event
-from model.neuralnet import UNet1D
+import sys
 from pathlib import Path
 import subprocess
 import struct
+
+# Add parent directory to path for config import
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import Paths, AudioSettings, RTLSDRSettings
+from model.neuralnet import UNet1D
 
 """
 Created by Satya with Copilot @ 15/11/25
@@ -22,17 +27,27 @@ class RTLSDRDenoiser:
     """
     Real-time audio denoiser for RTL-SDR FM radio input.
     """
-    def __init__(self, model_path, frequency=88.5e6, sample_rate=22050, chunk_size=4096, device='cpu'):
+    def __init__(self, model_path=None, frequency=None, sample_rate=None, chunk_size=None, device='cpu'):
         """
         Initialize the RTL-SDR denoiser.
         
         Args:
-            model_path: Path to trained model checkpoint
-            frequency: FM radio frequency in Hz (e.g., 88.5e6 = 88.5 MHz)
-            sample_rate: Audio sample rate (default: 22050)
-            chunk_size: Size of audio chunks for processing
+            model_path: Path to trained model checkpoint (default: uses config)
+            frequency: FM radio frequency in Hz (default: uses config, e.g., 99.5e6 = 99.5 MHz)
+            sample_rate: Audio sample rate (default: uses config)
+            chunk_size: Size of audio chunks for processing (default: uses config)
             device: 'cuda' or 'cpu'
         """
+        # Use config defaults if not specified
+        if model_path is None:
+            model_path = str(Paths.MODEL_BEST)
+        if frequency is None:
+            frequency = RTLSDRSettings.FM_FREQUENCY
+        if sample_rate is None:
+            sample_rate = AudioSettings.SAMPLE_RATE
+        if chunk_size is None:
+            chunk_size = AudioSettings.CHUNK_SIZE
+        
         self.frequency = frequency
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
