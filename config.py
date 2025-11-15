@@ -35,6 +35,12 @@ class Paths:
     LIBRISPEECH_DEV_CLEAN = LIBRISPEECH_ROOT / "dev-clean"
     LIBRISPEECH_DEV_OTHER = LIBRISPEECH_ROOT / "dev-other"
     LIBRISPEECH_PROCESSED = DATASET_ROOT / "LibriSpeech_processed"
+    LIBRISPEECH_PROCESSED_SNR = DATASET_ROOT / "LibriSpeech_processed_snr"  # SNR-based noise
+    
+    # Music dataset
+    MUSIC_ROOT = DATASET_ROOT / "music"
+    MUSIC_RAW = MUSIC_ROOT / "raw"
+    MUSIC_PROCESSED = DATASET_ROOT / "music_processed"
     
     # Instant dataset (smaller, for quick testing)
     INSTANT_ROOT = DATASET_ROOT / "instant"
@@ -64,6 +70,10 @@ class Paths:
             cls.DATASET_ROOT,
             cls.LIBRISPEECH_ROOT,
             cls.LIBRISPEECH_PROCESSED,
+            cls.LIBRISPEECH_PROCESSED_SNR,
+            cls.MUSIC_ROOT,
+            cls.MUSIC_RAW,
+            cls.MUSIC_PROCESSED,
             cls.INSTANT_CLEAN,
             cls.INSTANT_NOISY,
             cls.NOISE_ROOT,
@@ -90,7 +100,9 @@ class AudioSettings:
     SAMPLE_RATE = 22050
     
     # Audio length for training (in samples)
-    AUDIO_LENGTH = 2 * SAMPLE_RATE  # 2 seconds
+    # Must be divisible by 16 (2^4) for U-Net with 4 downsampling layers
+    # Using 2 seconds: 44096 samples (closest to 44100 that's divisible by 16)
+    AUDIO_LENGTH = 44096  # ~2 seconds, divisible by 16
     
     # Real-time processing settings
     CHUNK_SIZE = 4096  # Samples per chunk for real-time processing
@@ -132,23 +144,27 @@ class TrainingConfig:
     # Device
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    # Training hyperparameters (default values)
-    BATCH_SIZE = 16
-    LEARNING_RATE = 0.0001
-    NUM_EPOCHS = 100
+    # Training hyperparameters (optimized for 8-hour training window)
+    BATCH_SIZE = 16  # Good balance between speed and stability
+    LEARNING_RATE = 0.0001  # Standard for Adam optimizer on audio tasks
+    NUM_EPOCHS = 40  # Realistic for 8-hour window (~12 min/epoch = 480 min total)
     
-    # Optimizer settings
-    OPTIMIZER = 'adam'  # 'adam' or 'adamw'
-    WEIGHT_DECAY = 0.01  # For AdamW
+    # Optimizer settings (AdamW generally better for deep learning)
+    OPTIMIZER = 'adamw'  # 'adam' or 'adamw' - AdamW has better weight decay
+    WEIGHT_DECAY = 0.01  # For AdamW regularization
     
-    # Learning rate scheduler
+    # Learning rate scheduler (reduce LR when plateauing)
     SCHEDULER_MODE = 'min'
-    SCHEDULER_FACTOR = 0.5
-    SCHEDULER_PATIENCE = 10
+    SCHEDULER_FACTOR = 0.5  # Cut LR in half when no improvement
+    SCHEDULER_PATIENCE = 3  # Very aggressive: ~36 min before LR reduction
     SCHEDULER_MIN_LR = 1e-7
     
-    # Early stopping
-    EARLY_STOPPING_PATIENCE = 20
+    # Early stopping (prevents overfitting)
+    EARLY_STOPPING_PATIENCE = 6  # Stops after ~72 min of no improvement
+    
+    # Checkpoint settings (for resume capability)
+    SAVE_CHECKPOINT_EVERY = 1  # Save checkpoint every N epochs
+    CHECKPOINT_DIR = 'saved_models/checkpoints'
     
     # Gradient clipping
     GRADIENT_CLIP_MAX_NORM = 1.0

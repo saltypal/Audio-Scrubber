@@ -3,11 +3,17 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import os
+import sys
 import librosa
 import numpy as np
 from pathlib import Path
 from neuralnet import UNet1D
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+
+# Add parent directory to path for config import
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from config import Paths, AudioSettings, TrainingConfig
 
 """
 Created by Satya with Copilot @ 15/11/25
@@ -21,27 +27,27 @@ Training script for 1D U-Net Audio Denoiser
 
 # --- Configuration ---
 class Config:
-    # Paths
-    CLEAN_AUDIO_DIR = r"dataset\instant\clean"
-    NOISY_AUDIO_DIR = r"dataset\instant\noisy"
-    MODEL_SAVE_PATH = r"saved_models\unet1d_best.pth"
+    # Paths - Using LibriSpeech processed dataset with SNR-based noise
+    CLEAN_AUDIO_DIR = str(Paths.LIBRISPEECH_PROCESSED_SNR / "clean")
+    NOISY_AUDIO_DIR = str(Paths.LIBRISPEECH_PROCESSED_SNR / "noisy")
+    MODEL_SAVE_PATH = str(Paths.MODEL_BEST)
     
-    # Audio parameters
-    SAMPLE_RATE = 22050
-    AUDIO_LENGTH = 16000  # ~0.7 seconds
+    # Audio parameters - Using config
+    SAMPLE_RATE = AudioSettings.SAMPLE_RATE
+    AUDIO_LENGTH = AudioSettings.AUDIO_LENGTH
     
-    # Training hyperparameters
-    BATCH_SIZE = 8
-    NUM_EPOCHS = 50
-    LEARNING_RATE = 0.001
-    TRAIN_SPLIT = 0.8  # 80% train, 20% validation
+    # Training hyperparameters - Using config defaults
+    BATCH_SIZE = TrainingConfig.BATCH_SIZE
+    NUM_EPOCHS = TrainingConfig.NUM_EPOCHS
+    LEARNING_RATE = TrainingConfig.LEARNING_RATE
+    TRAIN_SPLIT = TrainingConfig.TRAIN_SPLIT
     
     # Model parameters
-    IN_CHANNELS = 1
-    OUT_CHANNELS = 1
+    IN_CHANNELS = AudioSettings.IN_CHANNELS
+    OUT_CHANNELS = AudioSettings.OUT_CHANNELS
     
     # Device
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    DEVICE = TrainingConfig.DEVICE
 
 
 class AudioDataset(Dataset):
@@ -74,40 +80,55 @@ class AudioDataset(Dataset):
     def __getitem__(self, idx):
         """
         Load a noisy audio file and its corresponding clean version.
+        Ensures exact audio_length for all samples to prevent tensor size mismatches.
         """
         # Load noisy audio
         noisy_path = os.path.join(self.noisy_dir, self.noisy_files[idx])
         noisy_audio, _ = librosa.load(noisy_path, sr=self.sample_rate)
         
         # Extract the base filename to find the corresponding clean file
-        # Noisy filename format: "1272-128104-0000_noise_level_1_0.005.flac"
+        # Noisy filename format with SNR: "1272-128104-0000_snr_10dB.flac"
         # Clean filename format: "1272-128104-0000.flac"
         noisy_filename = self.noisy_files[idx]
         
-        # Remove the noise suffix to get clean filename
-        if '_noise_level_' in noisy_filename:
-            clean_filename = noisy_filename.split('_noise_level_')[0] + '.flac'
+        # Remove the SNR suffix to get clean filename
+        if '_snr_' in noisy_filename:
+            clean_filename = noisy_filename.split('_snr_')[0] + '.flac'
         else:
-            # Fallback: assume clean file has the same name
-            clean_filename = noisy_filename
+            # Fallback for old format
+            if '_noise_level_' in noisy_filename:
+                clean_filename = noisy_filename.split('_noise_level_')[0] + '.flac'
+            else:
+                clean_filename = noisy_filename
         
         # Load clean audio
         clean_path = os.path.join(self.clean_dir, clean_filename)
         clean_audio, _ = librosa.load(clean_path, sr=self.sample_rate)
         
-        # Ensure both have the same length
+        # Ensure both have the same length first
         min_length = min(len(noisy_audio), len(clean_audio))
         noisy_audio = noisy_audio[:min_length]
         clean_audio = clean_audio[:min_length]
         
-        # Pad or truncate to audio_length
-        if len(noisy_audio) < self.audio_length:
+        # CRITICAL: Ensure exact audio_length to prevent tensor size mismatches
+        # Always truncate first, then pad if needed
+        if len(noisy_audio) > self.audio_length:
+            # Truncate to exact length
+            noisy_audio = noisy_audio[:self.audio_length]
+            clean_audio = clean_audio[:self.audio_length]
+        elif len(noisy_audio) < self.audio_length:
+            # Pad to exact length
             pad_length = self.audio_length - len(noisy_audio)
             noisy_audio = np.pad(noisy_audio, (0, pad_length), mode='constant')
             clean_audio = np.pad(clean_audio, (0, pad_length), mode='constant')
-        else:
-            noisy_audio = noisy_audio[:self.audio_length]
-            clean_audio = clean_audio[:self.audio_length]
+        
+        # Double check: force exact length (safety measure)
+        noisy_audio = noisy_audio[:self.audio_length]
+        clean_audio = clean_audio[:self.audio_length]
+        
+        # Verify lengths match exactly
+        assert len(noisy_audio) == self.audio_length, f"Noisy audio length mismatch: {len(noisy_audio)} != {self.audio_length}"
+        assert len(clean_audio) == self.audio_length, f"Clean audio length mismatch: {len(clean_audio)} != {self.audio_length}"
         
         # Convert to tensors and add channel dimension
         noisy_tensor = torch.FloatTensor(noisy_audio).unsqueeze(0)  # (1, audio_length)
@@ -187,9 +208,48 @@ def validate(model, dataloader, criterion, device):
     return total_loss / len(dataloader)
 
 
-def train_model(config):
+def plot_training_history(train_losses, val_losses, save_path=None):
     """
-    Main training function.
+    Plot training and validation loss curves.
+    
+    Args:
+        train_losses: List of training losses per epoch
+        val_losses: List of validation losses per epoch
+        save_path: Optional path to save the plot image
+    """
+    plt.figure(figsize=(12, 6))
+    epochs = range(1, len(train_losses) + 1)
+    
+    plt.plot(epochs, train_losses, 'b-', label='Training Loss', linewidth=2)
+    plt.plot(epochs, val_losses, 'r-', label='Validation Loss', linewidth=2)
+    
+    # Mark best validation loss
+    best_epoch = val_losses.index(min(val_losses)) + 1
+    best_val_loss = min(val_losses)
+    plt.plot(best_epoch, best_val_loss, 'g*', markersize=15, label=f'Best Val Loss ({best_val_loss:.6f})')
+    
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Loss (MSE)', fontsize=12)
+    plt.title('Training and Validation Loss Over Epochs', fontsize=14, fontweight='bold')
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"📊 Loss plot saved to: {save_path}")
+    
+    plt.show()
+
+
+def train_model(config, resume_from_checkpoint=None):
+    """
+    Main training function with checkpoint resume capability.
+    
+    Args:
+        config: Training configuration
+        resume_from_checkpoint: Path to checkpoint file to resume from (optional)
     """
     print(f"\n{'='*60}")
     print(f"Training 1D U-Net Audio Denoiser")
@@ -198,6 +258,8 @@ def train_model(config):
     print(f"Batch size: {config.BATCH_SIZE}")
     print(f"Learning rate: {config.LEARNING_RATE}")
     print(f"Epochs: {config.NUM_EPOCHS}")
+    if resume_from_checkpoint:
+        print(f"🔄 Resuming from: {resume_from_checkpoint}")
     print(f"{'='*60}\n")
     
     # Create dataset
@@ -259,14 +321,32 @@ def train_model(config):
         verbose=True, min_lr=1e-7
     )
     
-    # Training loop with early stopping
+    # Load checkpoint if resuming
+    start_epoch = 0
     best_val_loss = float('inf')
     train_losses = []
     val_losses = []
     early_stopping_patience = getattr(config, 'EARLY_STOPPING_PATIENCE', 20)
     epochs_no_improve = 0
     
-    for epoch in range(config.NUM_EPOCHS):
+    if resume_from_checkpoint and os.path.exists(resume_from_checkpoint):
+        print(f"📂 Loading checkpoint from {resume_from_checkpoint}...")
+        checkpoint = torch.load(resume_from_checkpoint, map_location=config.DEVICE)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+        train_losses = checkpoint.get('train_losses', [])
+        val_losses = checkpoint.get('val_losses', [])
+        epochs_no_improve = checkpoint.get('epochs_no_improve', 0)
+        print(f"✅ Resumed from epoch {start_epoch}")
+        print(f"   Best val loss so far: {best_val_loss:.6f}")
+        print(f"   Epochs without improvement: {epochs_no_improve}\n")
+    
+    # Training loop with early stopping
+    for epoch in range(start_epoch, config.NUM_EPOCHS):
         print(f"\nEpoch [{epoch+1}/{config.NUM_EPOCHS}]")
         
         # Train
@@ -293,13 +373,37 @@ def train_model(config):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': train_loss,
                 'val_loss': val_loss,
+                'best_val_loss': best_val_loss,
+                'train_losses': train_losses,
+                'val_losses': val_losses,
             }, config.MODEL_SAVE_PATH)
             print(f"✅ Saved best model (val_loss: {val_loss:.6f})")
         else:
             epochs_no_improve += 1
             print(f"⏳ No improvement for {epochs_no_improve} epoch(s)")
+        
+        # Save checkpoint every epoch (for resume capability)
+        checkpoint_interval = getattr(config, 'SAVE_CHECKPOINT_EVERY', 1)
+        if (epoch + 1) % checkpoint_interval == 0:
+            checkpoint_dir = getattr(config, 'CHECKPOINT_DIR', 'saved_models/checkpoints')
+            checkpoint_path = Path(checkpoint_dir) / 'latest_checkpoint.pth'
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'train_loss': train_loss,
+                'val_loss': val_loss,
+                'best_val_loss': best_val_loss,
+                'train_losses': train_losses,
+                'val_losses': val_losses,
+                'epochs_no_improve': epochs_no_improve,
+            }, checkpoint_path)
+            print(f"💾 Checkpoint saved to {checkpoint_path}")
             
             # Early stopping
             if epochs_no_improve >= early_stopping_patience:
@@ -312,6 +416,10 @@ def train_model(config):
     print(f"Best validation loss: {best_val_loss:.6f}")
     print(f"Model saved to: {config.MODEL_SAVE_PATH}")
     print(f"{'='*60}\n")
+    
+    # Plot training history
+    plot_save_path = str(Path(config.MODEL_SAVE_PATH).parent / "training_history.png")
+    plot_training_history(train_losses, val_losses, save_path=plot_save_path)
     
     return train_losses, val_losses, model
 
@@ -617,15 +725,34 @@ if __name__ == "__main__":
             # Full tuning mode
             print("Starting full hyperparameter tuning...")
             train_with_hyperparameter_tuning(quick_mode=False)
+        elif mode == 'resume':
+            # Resume training from checkpoint
+            checkpoint_path = 'saved_models/checkpoints/latest_checkpoint.pth'
+            if len(sys.argv) > 2:
+                checkpoint_path = sys.argv[2]
+            
+            if not os.path.exists(checkpoint_path):
+                print(f"❌ Checkpoint not found: {checkpoint_path}")
+                print("Available checkpoints:")
+                checkpoint_dir = Path('saved_models/checkpoints')
+                if checkpoint_dir.exists():
+                    for ckpt in checkpoint_dir.glob('*.pth'):
+                        print(f"  - {ckpt}")
+            else:
+                config = Config()
+                train_losses, val_losses, model = train_model(config, resume_from_checkpoint=checkpoint_path)
+                print(f"\n✅ Training complete! Model saved to {config.MODEL_SAVE_PATH}")
         else:
-            print("Unknown mode. Use: 'quick', 'full', or 'analyze'")
+            print("Unknown mode. Use: 'quick', 'full', 'analyze', or 'resume'")
     else:
         # Default: train with best known hyperparameters or run quick tuning
         print("Usage:")
-        print("  python backshot.py quick    - Quick hyperparameter tuning")
-        print("  python backshot.py full     - Full hyperparameter tuning")
-        print("  python backshot.py analyze  - Analyze tuning results")
-        print("  python backshot.py          - Train with default config")
+        print("  python backshot.py              - Train with default config")
+        print("  python backshot.py resume       - Resume from latest checkpoint")
+        print("  python backshot.py resume <path> - Resume from specific checkpoint")
+        print("  python backshot.py quick        - Quick hyperparameter tuning")
+        print("  python backshot.py full         - Full hyperparameter tuning")
+        print("  python backshot.py analyze      - Analyze tuning results")
         print()
         
         # Train with default config
