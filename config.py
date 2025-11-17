@@ -50,10 +50,19 @@ class Paths:
     # Noise files
     NOISE_ROOT = DATASET_ROOT / "noise"
     STATIC_NOISE = NOISE_ROOT / "static.flac"
+    NOISE_PURE = NOISE_ROOT / "pure10noise.wav"  # Real FM radio noise for training
     
     # Model paths
     MODEL_ROOT = PROJECT_ROOT / "saved_models"
-    MODEL_BEST = MODEL_ROOT / "unet1d_best.pth"
+    
+    # FM Radio model paths
+    MODEL_FM_ROOT = MODEL_ROOT / "FM"
+    MODEL_FM_BEST = MODEL_FM_ROOT / "unet1d_best.pth"
+    MODEL_FM_ONFLY_BEST = MODEL_FM_ROOT / "unet1d_onfly_best.pth"
+    MODEL_FM_CHECKPOINTS = MODEL_FM_ROOT / "checkpoints"
+    
+    # Legacy paths (for backward compatibility)
+    MODEL_BEST = MODEL_FM_BEST  # Default to FM model
     MODEL_TUNING_DIR = MODEL_ROOT / "tuning"
     
     # Output paths
@@ -78,6 +87,8 @@ class Paths:
             cls.INSTANT_NOISY,
             cls.NOISE_ROOT,
             cls.MODEL_ROOT,
+            cls.MODEL_FM_ROOT,
+            cls.MODEL_FM_CHECKPOINTS,
             cls.MODEL_TUNING_DIR,
             cls.DENOISED_OUTPUT,
             cls.TESTING_ROOT,
@@ -164,7 +175,7 @@ class TrainingConfig:
     
     # Checkpoint settings (for resume capability)
     SAVE_CHECKPOINT_EVERY = 1  # Save checkpoint every N epochs
-    CHECKPOINT_DIR = 'saved_models/checkpoints'
+    CHECKPOINT_DIR = 'saved_models/FM/checkpoints'
     
     # Gradient clipping
     GRADIENT_CLIP_MAX_NORM = 1.0

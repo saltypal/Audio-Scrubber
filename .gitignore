@@ -12,8 +12,6 @@ __pycache__/
 .Python
 
 # Model checkpoints and outputs
-saved_models/
-output/
 
 # IDE
 .vscode/
@@ -29,4 +27,4 @@ Thumbs.db
 # Temporary files
 *.log
 *.tmp
-Tests/
+Tests\tests
