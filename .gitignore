@@ -1,0 +1,32 @@
+# Datasets (large files)
+dataset/
+
+# Old archived files
+Archived/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Model checkpoints and outputs
+saved_models/
+output/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.log
+*.tmp
+Tests/
