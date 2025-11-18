@@ -132,11 +132,14 @@ class RTLSDRDenoiser:
         loop.run_until_complete(self._sdr_async())
 
     async def _sdr_async(self):
-        """Async SDR capture."""
+        """Async SDR capture using proper async streaming."""
         try:
-            from rtlsdr import RtlSdr
+            from rtlsdr.rtlsdraio import RtlSdrAio
             
-            self.sdr = RtlSdr()
+            # Use async version of RtlSdr
+            self.sdr = RtlSdrAio()
+            await self.sdr.open()
+            
             self.sdr.sample_rate = 250000
             self.sdr.center_freq = self.frequency
             self.sdr.gain = self.gain if self.gain != 'auto' else 'auto'
@@ -148,11 +151,12 @@ class RTLSDRDenoiser:
             print(f"   Sample Rate: {self.sdr.sample_rate / 1e6:.2f} MHz")
             print(f"[INFO] Starting audio stream capture...")
 
-            # Use read_samples with callback instead of async stream
-            def sample_callback(samples, context):
-                """Callback for each chunk of samples."""
+            # Use async streaming (proper method)
+            chunk_size = 240000
+            
+            async for samples in self.sdr.stream(chunk_size):
                 if not self.running.is_set():
-                    return
+                    break
 
                 # FM Demodulation
                 angle_diff = np.angle(samples[1:] * np.conj(samples[:-1]))
@@ -169,25 +173,12 @@ class RTLSDRDenoiser:
                     audio_chunk = np.concatenate((audio_chunk, padding))
 
                 try:
-                    self.raw_audio_queue.put(audio_chunk, timeout=1.0)
+                    self.raw_audio_queue.put(audio_chunk, timeout=0.1)
                 except:
                     pass  # Drop frames if queue is full
-
-            # Read samples asynchronously
-            sample_count = 0
-            chunk_size = 240000
-            
-            while self.running.is_set():
-                try:
-                    # Read samples in non-blocking manner
-                    samples = self.sdr.read_samples(chunk_size)
-                    sample_callback(samples, None)
-                    sample_count += len(samples)
-                except Exception as e:
-                    print(f"[WARNING] Read error: {e}")
-                    await asyncio.sleep(0.1)
             
             await self.sdr.stop()
+            self.sdr.close()
 
         except Exception as e:
             print(f"[ERROR] SDR Error: {e}")

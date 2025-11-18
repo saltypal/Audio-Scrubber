@@ -52,10 +52,11 @@ class RTLSDRCore:
                 f"sr={self.sample_rate}Hz, gain={self.gain})")
     
     async def initialize(self):
-        """Initialize RTL-SDR connection."""
+        """Initialize RTL-SDR connection using async version."""
         try:
-            from rtlsdr import RtlSdr
-            self.sdr = RtlSdr()
+            from rtlsdr.rtlsdraio import RtlSdrAio
+            self.sdr = RtlSdrAio()
+            await self.sdr.open()
             self.sdr.sample_rate = self.sdr_sample_rate
             self.sdr.center_freq = self.frequency
             self.sdr.gain = self.gain if self.gain != 'auto' else 'auto'
@@ -70,6 +71,7 @@ class RTLSDRCore:
         if self.sdr:
             try:
                 await self.sdr.stop()
+                self.sdr.close()
                 print("✅ SDR closed")
             except:
                 pass

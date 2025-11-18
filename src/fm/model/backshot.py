@@ -7,7 +7,7 @@ import sys
 import librosa
 import numpy as np
 from pathlib import Path
-from .neuralnet import UNet1D
+from neuralnet import UNet1D
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import soundfile as sf
@@ -855,53 +855,79 @@ def analyze_tuning_results(results_path="saved_models/tuning/hyperparameter_resu
 
 if __name__ == "__main__":
     import sys
+    import argparse
     
-    # Check command-line arguments
-    if len(sys.argv) > 1:
-        mode = sys.argv[1].lower()
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Train 1D U-Net Audio Denoiser')
+    parser.add_argument('mode', nargs='?', default='train', 
+                       choices=['train', 'resume', 'quick', 'full', 'analyze'],
+                       help='Training mode: train (default), resume, quick, full, analyze')
+    parser.add_argument('--epochs', '-e', type=int, default=None,
+                       help='Number of epochs to train (overrides config default)')
+    parser.add_argument('--batch-size', '-b', type=int, default=None,
+                       help='Batch size (overrides config default)')
+    parser.add_argument('--learning-rate', '-lr', type=float, default=None,
+                       help='Learning rate (overrides config default)')
+    parser.add_argument('--checkpoint', '-c', type=str, default='saved_models/FM/checkpoints/latest_checkpoint.pth',
+                       help='Checkpoint path for resume mode')
+    
+    args = parser.parse_args()
+    mode = args.mode.lower()
+    
+    if mode == 'analyze':
+        # Analyze existing tuning results
+        analyze_tuning_results()
+    elif mode == 'quick':
+        # Quick tuning mode
+        print("Starting quick hyperparameter tuning...")
+        quick_tune()
+    elif mode == 'full':
+        # Full tuning mode
+        print("Starting full hyperparameter tuning...")
+        train_with_hyperparameter_tuning(quick_mode=False)
+    elif mode == 'resume':
+        # Resume training from checkpoint
+        checkpoint_path = args.checkpoint
         
-        if mode == 'analyze':
-            # Analyze existing tuning results
-            analyze_tuning_results()
-        elif mode == 'quick':
-            # Quick tuning mode
-            print("Starting quick hyperparameter tuning...")
-            quick_tune()
-        elif mode == 'full':
-            # Full tuning mode
-            print("Starting full hyperparameter tuning...")
-            train_with_hyperparameter_tuning(quick_mode=False)
-        elif mode == 'resume':
-            # Resume training from checkpoint
-            checkpoint_path = 'saved_models/FM/checkpoints/latest_checkpoint.pth'
-            if len(sys.argv) > 2:
-                checkpoint_path = sys.argv[2]
-            
-            if not os.path.exists(checkpoint_path):
-                print(f"❌ Checkpoint not found: {checkpoint_path}")
-                print("Available checkpoints:")
-                checkpoint_dir = Path('saved_models/FM/checkpoints')
-                if checkpoint_dir.exists():
-                    for ckpt in checkpoint_dir.glob('*.pth'):
-                        print(f"  - {ckpt}")
-            else:
-                config = Config()
-                train_losses, val_losses, model = train_model(config, resume_from_checkpoint=checkpoint_path)
-                print(f"\n✅ Training complete! Model saved to {config.MODEL_SAVE_PATH}")
+        if not os.path.exists(checkpoint_path):
+            print(f"❌ Checkpoint not found: {checkpoint_path}")
+            print("Available checkpoints:")
+            checkpoint_dir = Path('saved_models/FM/checkpoints')
+            if checkpoint_dir.exists():
+                for ckpt in checkpoint_dir.glob('*.pth'):
+                    print(f"  - {ckpt}")
         else:
-            print("Unknown mode. Use: 'quick', 'full', 'analyze', or 'resume'")
-    else:
-        # Default: train with best known hyperparameters or run quick tuning
-        print("Usage:")
-        print("  python backshot.py              - Train with default config")
-        print("  python backshot.py resume       - Resume from latest checkpoint")
-        print("  python backshot.py resume <path> - Resume from specific checkpoint")
-        print("  python backshot.py quick        - Quick hyperparameter tuning")
-        print("  python backshot.py full         - Full hyperparameter tuning")
-        print("  python backshot.py analyze      - Analyze tuning results")
-        print()
-        
-        # Train with default config
+            config = Config()
+            
+            # Apply command-line overrides
+            if args.epochs is not None:
+                config.NUM_EPOCHS = args.epochs
+                print(f"🔧 Epochs overridden to: {args.epochs}")
+            if args.batch_size is not None:
+                config.BATCH_SIZE = args.batch_size
+                print(f"🔧 Batch size overridden to: {args.batch_size}")
+            if args.learning_rate is not None:
+                config.LEARNING_RATE = args.learning_rate
+                print(f"🔧 Learning rate overridden to: {args.learning_rate}")
+            
+            train_losses, val_losses, model = train_model(config, resume_from_checkpoint=checkpoint_path)
+            print(f"\n✅ Training complete! Model saved to {config.MODEL_SAVE_PATH}")
+    elif mode == 'train':
+        # Default: train with config (with optional overrides)
         config = Config()
+        
+        # Apply command-line overrides
+        if args.epochs is not None:
+            config.NUM_EPOCHS = args.epochs
+            print(f"🔧 Epochs overridden to: {args.epochs}")
+        if args.batch_size is not None:
+            config.BATCH_SIZE = args.batch_size
+            print(f"🔧 Batch size overridden to: {args.batch_size}")
+        if args.learning_rate is not None:
+            config.LEARNING_RATE = args.learning_rate
+            print(f"🔧 Learning rate overridden to: {args.learning_rate}")
+        
         train_losses, val_losses, model = train_model(config)
         print(f"\n✅ Training complete! Model saved to {config.MODEL_SAVE_PATH}")
+    else:
+        print("Unknown mode. Use: 'train', 'quick', 'full', 'analyze', or 'resume'")
