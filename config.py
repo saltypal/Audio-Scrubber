@@ -50,7 +50,7 @@ class Paths:
     # Noise files
     NOISE_ROOT = DATASET_ROOT / "noise"
     STATIC_NOISE = NOISE_ROOT / "static.flac"
-    NOISE_PURE = NOISE_ROOT / "pure10noise.wav"  # Real FM radio noise for training
+    NOISE_PURE = NOISE_ROOT / "FM_Noise.wav"  # Real FM radio noise for training
     
     # Model paths
     MODEL_ROOT = PROJECT_ROOT / "saved_models"
