@@ -120,34 +120,47 @@ class LiveSDRDenoiser:
     def _find_device_id(self, name, kind='input'):
         """Find audio device ID by its name."""
         devices = sd.query_devices()
+        print(f"\n🔍 Searching for {kind} device matching '{name}'...")
         for i, device in enumerate(devices):
             if name.lower() in device['name'].lower() and device[f'max_{kind}_channels'] > 0:
-                print(f"Found {kind} device '{device['name']}' with ID {i}")
+                print(f"   ✅ Found: ID {i} -> '{device['name']}'")
                 return i
+        print(f"   ❌ NOT FOUND! Available {kind} devices:")
+        for i, device in enumerate(devices):
+            if device[f'max_{kind}_channels'] > 0:
+                print(f"      ID {i}: {device['name']}")
         return None
 
     def _ai_worker(self):
         """AI Thread: Processes audio chunks."""
-        print("🤖 AI thread started")
+        print("\n🤖 AI thread started")
+        processed_count = 0
         
         # Passthrough mode: just move audio from input to output
         if self.passthrough:
+            print("✅ PASSTHROUGH MODE ACTIVE - Audio will pass through without AI processing")
             while self.running.is_set():
                 if not self.in_queue.empty():
                     chunk = self.in_queue.get()
+                    processed_count += 1
                     if not self.out_queue.full():
                         self.out_queue.put(chunk)
-            print("🤖 AI thread stopped (Passthrough)")
+                    else:
+                        print(f"⚠️ Output queue full in passthrough mode! Chunk #{processed_count} dropped.")
+            print(f"\n🤖 AI thread stopped (Passthrough). Processed {processed_count} chunks.")
             return
 
         # Denoising mode
+        print(f"✅ DENOISING MODE ACTIVE - Audio will be processed through AI model")
         overlap = self.chunk_size // 2
         buffer = np.zeros(self.chunk_size + overlap, dtype=np.float32)
+        processed_count = 0
         
         with torch.no_grad():
             while self.running.is_set():
                 if not self.in_queue.empty():
                     noisy_chunk = self.in_queue.get()
+                    processed_count += 1
                     
                     # Add new chunk to buffer
                     buffer[:-self.chunk_size] = buffer[self.chunk_size:]
@@ -163,24 +176,35 @@ class LiveSDRDenoiser:
                     
                     if not self.out_queue.full():
                         self.out_queue.put(output_chunk)
+                    else:
+                        print(f"⚠️ Output queue full! Denoised chunk #{processed_count} dropped.")
         
-        print("🤖 AI thread stopped (Denoising)")
+        print(f"\n🤖 AI thread stopped (Denoising). Processed {processed_count} chunks.")
     
     def _audio_callback(self, indata, outdata, frames, time, status):
         """Audio Thread: Handles audio I/O."""
         if status:
             print(f"⚠️ Audio status: {status}", file=sys.stderr)
         
+        # Get audio volume for debug
+        input_volume = np.abs(indata[:, 0]).max()
+        
         # Put incoming audio into the queue
         if not self.in_queue.full():
-            self.in_queue.put(indata[:, 0])
+            self.in_queue.put(indata[:, 0].copy())
+        else:
+            print(f"⚠️ Input queue full! Dropping audio chunk. In: {self.in_queue.qsize()}, Out: {self.out_queue.qsize()}")
         
-        # Get denoised audio from the queue
+        # Get processed audio from the queue
         if not self.out_queue.empty():
             clean_chunk = self.out_queue.get()
             outdata[:, 0] = clean_chunk
+            output_volume = np.abs(clean_chunk).max()
+            print(f"🔊 IN: {input_volume:.4f} | OUT: {output_volume:.4f} | Q(in): {self.in_queue.qsize()} | Q(out): {self.out_queue.qsize()}")
         else:
-            outdata.fill(0) # Output silence if queue is empty
+            outdata.fill(0)  # Output silence if queue is empty
+            if input_volume > 0:
+                print(f"⏳ Waiting for processing... IN: {input_volume:.4f} | Q(in): {self.in_queue.qsize()} | Q(out): {self.out_queue.qsize()}")
     
     def start(self):
         """Start the live denoising stream."""
@@ -200,9 +224,11 @@ class LiveSDRDenoiser:
             print(sd.query_devices())
             return
             
-        output_device_id = self.output_device_name
+        output_device_id = None
         if isinstance(self.output_device_name, str):
             output_device_id = self._find_device_id(self.output_device_name, 'output')
+        elif self.output_device_name is not None:
+            output_device_id = self.output_device_name
 
         self.running.set()
         self.ai_thread = Thread(target=self._ai_worker, daemon=True)
@@ -217,8 +243,11 @@ class LiveSDRDenoiser:
                 dtype='float32',
                 callback=self._audio_callback
             ):
-                print("\n✅ Real-time denoising active!")
-                print("   Listening for audio from SDR#...")
+                print(f"\n✅ Audio stream active!")
+                print(f"   Input:  Device #{input_device_id} ('{self.input_device_name}')")
+                print(f"   Output: Device #{output_device_id if output_device_id else 'Default'}")
+                print(f"   Mode:   {'PASSTHROUGH (No AI)' if self.passthrough else 'DENOISING (AI Active)'}")
+                print(f"   Listening for audio...\n")
                 while self.running.is_set():
                     sd.sleep(100)
         

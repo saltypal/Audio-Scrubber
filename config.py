@@ -57,7 +57,9 @@ class Paths:
     
     # FM Radio model paths
     MODEL_FM_ROOT = MODEL_ROOT / "FM"
-    MODEL_FM_BEST = MODEL_FM_ROOT / "unet1d_best.pth"
+    # MODEL_FM_BEST = MODEL_FM_ROOT / "unet1d_music_best.pth"
+
+    MODEL_FM_BEST = MODEL_FM_ROOT / "unet1d_music_best.pth"
     MODEL_FM_ONFLY_BEST = MODEL_FM_ROOT / "unet1d_onfly_best.pth"
     MODEL_FM_CHECKPOINTS = MODEL_FM_ROOT / "checkpoints"
     

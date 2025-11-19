@@ -11,9 +11,9 @@ from config import Paths, AudioSettings
 from src.fm.model.neuralnet import UNet1D
 
 MODEL_PATH = str(Paths.MODEL_FM_BEST)
-DEFAULT_INPUT_DIR = r"Tests\samples"
-DEFAULT_OUTPUT_DIR = r"Tests\testing2\out"
-SAMPLE_RATE = 22050
+DEFAULT_INPUT_DIR = r"Tests\samples\FromSDR"
+DEFAULT_OUTPUT_DIR = r"Tests\tests\SDR3"
+SAMPLE_RATE = 44100
 """
 ================================================================================
 AUDIO DENOISER - INFERENCE MODULE
@@ -167,7 +167,14 @@ class Denoiser:
         
         # Save
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        sf.write(output_path, denoised, sr, format='FLAC')
+        
+        # Determine format from output file extension
+        output_ext = Path(output_path).suffix.lower()
+        if output_ext == '.flac':
+            sf.write(output_path, denoised, sr, format='FLAC')
+        else:
+            # Default to WAV for .wav or unknown extensions
+            sf.write(output_path, denoised, sr, format='WAV')
         print(f"  ✅ Saved to: {output_path}")
 
 
@@ -225,11 +232,11 @@ def main():
         INPUT_DIR = DEFAULT_INPUT_DIR
         OUTPUT_DIR = DEFAULT_OUTPUT_DIR
         
-        # Get all noisy files
-        input_files = list(Path(INPUT_DIR).glob("*.flac"))
+        # Get all noisy files (.wav and .flac)
+        input_files = list(Path(INPUT_DIR).glob("*.flac")) + list(Path(INPUT_DIR).glob("*.wav"))
         
         if not input_files:
-            print(f"❌ No .flac files found in {INPUT_DIR}")
+            print(f"❌ No .flac or .wav files found in {INPUT_DIR}")
             return
         
         print(f"\n{'='*60}")
