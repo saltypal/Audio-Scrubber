@@ -28,9 +28,12 @@ Training script for 1D U-Net Audio Denoiser
 
 # --- Configuration ---
 class Config:
-    # Paths - Using LibriSpeech processed dataset (dev-clean)
-    CLEAN_AUDIO_DIR = str(Paths.LIBRISPEECH_DEV_CLEAN)
-    NOISE_FILE = str(Paths.NOISE_PURE)  # Real FM noise recording
+    # Paths - Using LibriSpeech dev-clean + dev-other datasets
+    CLEAN_AUDIO_DIRS = [
+        str(Paths.LIBRISPEECH_DEV_CLEAN),
+        str(Paths.LIBRISPEECH_DEV_OTHER),
+    ]
+    NOISE_FILE = str(Paths.NOISE_PURE)  # Real FM noise recording (superNoiseFM.wav)
     MODEL_SAVE_PATH = str(Paths.MODEL_FM_BEST)
     CHECKPOINT_DIR = str(Paths.MODEL_FM_CHECKPOINTS)
     
@@ -174,19 +177,11 @@ class OnFlyNoiseDataset(Dataset):
         
         print(f"[OnFlyNoise] Loading clean files from {clean_dir}")
         
-        # Get all clean files recursively
+        # Get all clean files recursively (use ALL available files)
         clean_path = Path(clean_dir)
         self.clean_files = sorted([str(f) for f in clean_path.rglob('*.flac')])
-        
-        # Shuffle and optionally limit the number of clean files used
         np.random.shuffle(self.clean_files)
-        # Hard cap for quick experiments / limited compute
-        max_files = int(os.environ.get("AS_MAX_FILES", "800"))
-        if len(self.clean_files) > max_files:
-            self.clean_files = self.clean_files[:max_files]
-            print(f"[OnFlyNoise] Found {len(self.clean_files)} clean files (capped to {max_files})")
-        else:
-            print(f"[OnFlyNoise] Found {len(self.clean_files)} clean files")
+        print(f"[OnFlyNoise] Found {len(self.clean_files)} clean files (no cap)")
         
         # Load the real FM noise recording
         print(f"[OnFlyNoise] Loading FM noise from {noise_file}")
@@ -210,47 +205,53 @@ class OnFlyNoiseDataset(Dataset):
     
     def _add_noise_snr(self, clean_audio, snr_db):
         """
-        Add real FM noise to clean audio using SNR method.
+        Add real FM noise to clean audio using SNR method with proper normalization.
+        
+        IMPORTANT: Normalizes both signals to standard RMS (0.1) BEFORE calculating SNR.
+        This ensures SNR values are consistent regardless of original file volumes.
+        Recalculates noise power for each chunk since noise segments vary.
         
         SNR (dB) = 10 * log10(Power_signal / Power_noise)
         Power = mean(signal^2)
         
         Args:
             clean_audio: Clean audio signal
-            snr_db: Target SNR in decibels
+            snr_db: Target SNR in decibels (positive = speech louder, negative = noise louder)
             
         Returns:
             Noisy audio with specified SNR
         """
-        # Calculate signal power
-        signal_power = np.mean(clean_audio ** 2)
-        
-        # Get random segment of noise
+        # Step 1: Get random segment of noise (same length as clean audio)
         if len(self.noise_audio) > len(clean_audio):
             start_idx = np.random.randint(0, len(self.noise_audio) - len(clean_audio))
             noise_segment = self.noise_audio[start_idx:start_idx + len(clean_audio)]
         else:
             noise_segment = self.noise_audio[:len(clean_audio)]
         
-        # Calculate noise power
-        noise_power = np.mean(noise_segment ** 2)
+        # Step 2: Normalize clean audio to standard RMS = 0.1
+        clean_rms = np.sqrt(np.mean(clean_audio ** 2)) + 1e-8
+        clean_normalized = clean_audio * (0.1 / clean_rms)
         
-        # Calculate required noise scaling factor from SNR
+        # Step 3: Normalize noise chunk to standard RMS = 0.1
+        # CRITICAL: Calculate power for THIS specific noise chunk (not the whole file)
+        noise_rms = np.sqrt(np.mean(noise_segment ** 2)) + 1e-8
+        noise_normalized = noise_segment * (0.1 / noise_rms)
+        
+        # Step 4: Calculate target noise power based on SNR
         # SNR(dB) = 10*log10(signal_power/noise_power)
-        # Therefore: noise_power_target = signal_power / (10^(SNR/10))
+        # => noise_power_target = signal_power / (10^(SNR/10))
+        signal_power = np.mean(clean_normalized ** 2)
         snr_linear = 10 ** (snr_db / 10.0)
         noise_power_target = signal_power / snr_linear
         
-        # Scale noise to achieve target SNR
-        if noise_power > 0:
-            noise_scale = np.sqrt(noise_power_target / noise_power)
-        else:
-            noise_scale = 0
+        # Step 5: Scale normalized noise to achieve target SNR
+        # Recalculate noise power for the normalized chunk
+        noise_power = np.mean(noise_normalized ** 2) + 1e-8
+        noise_scale = np.sqrt(noise_power_target / noise_power)
+        scaled_noise = noise_normalized * noise_scale
         
-        scaled_noise = noise_segment * noise_scale
-        
-        # Add noise to signal
-        noisy_audio = clean_audio + scaled_noise
+        # Step 6: Mix and return
+        noisy_audio = clean_normalized + scaled_noise
         
         return noisy_audio
     
@@ -416,13 +417,25 @@ def train_model(config, resume_from_checkpoint=None):
     
     # Create dataset - Using ON-THE-FLY noise generation with real FM noise
     print("\n[INFO] Using OnFlyNoiseDataset with real FM noise")
-    dataset = OnFlyNoiseDataset(
-        config.CLEAN_AUDIO_DIR,
+    # Support multiple clean directories (dev-clean + dev-other)
+    if hasattr(config, "CLEAN_AUDIO_DIRS"):
+        clean_dirs = config.CLEAN_AUDIO_DIRS
+    else:
+        clean_dirs = [config.CLEAN_AUDIO_DIR]
+
+    # Build a combined list of clean files by pointing dataset to a virtual root
+    # Here we simply create one dataset per dir and concatenate via ConcatDataset
+    from torch.utils.data import ConcatDataset
+    datasets = []
+    for d in clean_dirs:
+        datasets.append(OnFlyNoiseDataset(
+        d,
         config.NOISE_FILE,
         config.AUDIO_LENGTH,
         config.SAMPLE_RATE,
         snr_db_range=(5, 20)  # SNR between 5dB (very noisy) and 20dB (less noisy)
-    )
+    ))
+    dataset = ConcatDataset(datasets)
     
     # Split into train and validation
     train_size = int(config.TRAIN_SPLIT * len(dataset))

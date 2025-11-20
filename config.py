@@ -50,7 +50,7 @@ class Paths:
     # Noise files
     NOISE_ROOT = DATASET_ROOT / "noise"
     STATIC_NOISE = NOISE_ROOT / "static.flac"
-    NOISE_PURE = NOISE_ROOT / "pure10noise.wav"  # Real FM radio noise for training
+    NOISE_PURE = NOISE_ROOT / "superNoiseFM.wav"  # Real FM radio noise for training
     
     # Model paths
     MODEL_ROOT = PROJECT_ROOT / "saved_models"
@@ -155,11 +155,11 @@ class TrainingConfig:
     # Device
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    # Training hyperparameters (optimized for 8-hour training window)
-    # For a 6GB GPU, start with a smaller batch size to avoid OOM
+    # Training hyperparameters
+    # For a 6GB GPU, use a smaller batch size to avoid OOM
     BATCH_SIZE = 4
     LEARNING_RATE = 0.0001  # Standard for Adam optimizer on audio tasks
-    NUM_EPOCHS = 40  # Realistic for 8-hour window (~12 min/epoch = 480 min total)
+    NUM_EPOCHS = 100  # Increased for deeper training
     
     # Optimizer settings (AdamW generally better for deep learning)
     OPTIMIZER = 'adamw'  # 'adam' or 'adamw' - AdamW has better weight decay

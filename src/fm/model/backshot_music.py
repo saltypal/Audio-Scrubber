@@ -4,6 +4,10 @@ Music Audio Denoiser Training Script (backshot_music.py)
 Specialized training script for music denoising using 1D U-Net.
 Optimized for music characteristics: full frequency spectrum, dense audio, polyphonic.
 
+This version mirrors the speech/FM pipeline and uses **on-the-fly
+noise mixing** with the real FM noise file (e.g. superNoiseFM.wav),
+instead of requiring pre-generated noisy music files.
+
 Key Differences from Speech Training:
 - Higher sample rate: 44100 Hz (CD quality)
 - Longer audio segments: 88192 samples (~2 seconds)
@@ -11,17 +15,16 @@ Key Differences from Speech Training:
 - Same architecture (U-Net works for both)
 
 Usage:
-    # Train music model
-    python src/model/backshot_music.py
+    # Train music model with on-the-fly noise
+    python src/fm/model/backshot_music.py
     
     # Resume training
-    python src/model/backshot_music.py resume
-    
-    # Quick hyperparameter tuning
-    python src/model/backshot_music.py quick
+    python src/fm/model/backshot_music.py resume
 
-Created by Satya with Copilot @ 15/11/25
+Created by Satya with Copilot @ 15/11/25,
+updated for on-the-fly FM noise mixing.
 """
+
 
 import torch
 import torch.nn as nn
@@ -36,138 +39,161 @@ from neuralnet import UNet1D
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-# Add parent directory to path for config import
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config_music import Paths, AudioSettings, TrainingConfig
+# Add project root (where config_music.py lives) to path
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(PROJECT_ROOT))
+from config_music import Paths, AudioSettings, TrainingConfig, NoiseSettings
 
 
-# --- Configuration ---
 class MusicConfig:
     """Configuration for music model training"""
-    # Paths - Using music processed dataset
-    CLEAN_AUDIO_DIR = str(Paths.MUSIC_PROCESSED / "clean")
-    NOISY_AUDIO_DIR = str(Paths.MUSIC_PROCESSED / "noisy")
+
+    # Paths - Using raw music as clean, FM noise as background
+    CLEAN_AUDIO_DIRS = [str(Paths.MUSIC_ROOT)]
+    NOISE_FILE = str(Paths.NOISE_ROOT / "superNoiseFM.wav")
     MODEL_SAVE_PATH = str(Paths.MODEL_MUSIC_BEST)
-    
+
     # Audio parameters - Music specific (44.1kHz)
     SAMPLE_RATE = AudioSettings.SAMPLE_RATE  # 44100 Hz
     AUDIO_LENGTH = AudioSettings.AUDIO_LENGTH  # 88192 samples
-    
+
     # Training hyperparameters
     BATCH_SIZE = TrainingConfig.BATCH_SIZE
     NUM_EPOCHS = TrainingConfig.NUM_EPOCHS
     LEARNING_RATE = TrainingConfig.LEARNING_RATE
     TRAIN_SPLIT = TrainingConfig.TRAIN_SPLIT
-    
+
     # Optimizer settings
     OPTIMIZER = TrainingConfig.OPTIMIZER
     SCHEDULER_PATIENCE = TrainingConfig.SCHEDULER_PATIENCE
     SCHEDULER_FACTOR = TrainingConfig.SCHEDULER_FACTOR
     EARLY_STOPPING_PATIENCE = TrainingConfig.EARLY_STOPPING_PATIENCE
-    
+
     # Checkpoint settings
     SAVE_CHECKPOINT_EVERY = TrainingConfig.SAVE_CHECKPOINT_EVERY
     CHECKPOINT_DIR = TrainingConfig.CHECKPOINT_DIR
-    
+
     # Model parameters
     IN_CHANNELS = AudioSettings.IN_CHANNELS
     OUT_CHANNELS = AudioSettings.OUT_CHANNELS
-    
+
     # Device
     DEVICE = TrainingConfig.DEVICE
 
 
-class MusicAudioDataset(Dataset):
+class OnFlyMusicNoiseDataset(Dataset):
+    """On-the-fly noisy music generator (clean music + FM noise).
+
+    - Loads **all** music files from CLEAN dir(s) as clean targets.
+    - Loads a long FM noise recording (e.g. superNoiseFM.wav).
+    - For each sample, randomly crops a segment of clean + matching
+      segment of noise, mixes them at a random SNR and returns
+      (noisy, clean).
     """
-    Dataset for loading clean and noisy music audio pairs.
-    
-    Differences from speech dataset:
-    - Higher sample rate (44100 Hz)
-    - Longer audio segments (88192 samples)
-    - Full frequency spectrum
-    """
-    def __init__(self, clean_dir, noisy_dir, audio_length=88192, sample_rate=44100):
+
+    def __init__(self, clean_dir, noise_file, audio_length=88192, sample_rate=44100):
         self.clean_dir = clean_dir
-        self.noisy_dir = noisy_dir
+        self.noise_file = noise_file
         self.audio_length = audio_length
         self.sample_rate = sample_rate
-        print("Loading music clean and noisy files")
 
-        # Get all clean files (recursively)
+        print(f"[OnFlyMusicNoise] Scanning clean files in {clean_dir}")
         clean_path = Path(clean_dir)
-        self.clean_files = sorted([str(f.relative_to(clean_path)) for f in clean_path.rglob('*.flac') if not f.is_dir()])
-        self.clean_files += sorted([str(f.relative_to(clean_path)) for f in clean_path.rglob('*.wav') if not f.is_dir()])
-        self.clean_files += sorted([str(f.relative_to(clean_path)) for f in clean_path.rglob('*.mp3') if not f.is_dir()])
-        
-        # Get all noisy files (recursively)
-        noisy_path = Path(noisy_dir)
-        self.noisy_files = sorted([str(f.relative_to(noisy_path)) for f in noisy_path.rglob('*.flac') if not f.is_dir()])
-        self.noisy_files += sorted([str(f.relative_to(noisy_path)) for f in noisy_path.rglob('*.wav') if not f.is_dir()])
-        self.noisy_files += sorted([str(f.relative_to(noisy_path)) for f in noisy_path.rglob('*.mp3') if not f.is_dir()])
-        
-        print(f"Found {len(self.clean_files)} clean music files") 
-        print(f"Found {len(self.noisy_files)} noisy music files")
-    
+        self.clean_files = []
+        for ext in ("*.flac", "*.wav", "*.mp3"):
+            self.clean_files.extend([str(p) for p in clean_path.rglob(ext)])
+
+        if not self.clean_files:
+            raise RuntimeError(f"No music files found in {clean_dir}")
+
+        # Shuffle for randomness
+        np.random.shuffle(self.clean_files)
+        print(f"[OnFlyMusicNoise] Found {len(self.clean_files)} clean music files (no cap)")
+
+        # Load noise file once
+        if not Path(noise_file).exists():
+            raise FileNotFoundError(f"Noise file not found: {noise_file}")
+
+        print(f"[OnFlyMusicNoise] Loading noise from {noise_file}")
+        noise_audio, noise_sr = librosa.load(noise_file, sr=sample_rate)
+        if noise_sr != sample_rate:
+            print(f"[OnFlyMusicNoise] Resampling noise from {noise_sr} -> {sample_rate}")
+            noise_audio = librosa.resample(noise_audio, orig_sr=noise_sr, target_sr=sample_rate)
+
+        if len(noise_audio) < audio_length:
+            reps = int(np.ceil(audio_length / len(noise_audio)))
+            noise_audio = np.tile(noise_audio, reps)
+
+        self.noise_audio = noise_audio
+
     def __len__(self):
-        return len(self.noisy_files)
-    
+        return len(self.clean_files)
+
+    def _add_noise_snr(self, clean, noise, snr_db):
+        """
+        Mix clean + noise at a desired SNR (dB) with proper normalization.
+        
+        IMPORTANT: Normalizes both signals to standard RMS (0.1) BEFORE calculating SNR.
+        This ensures SNR values are consistent regardless of original file volumes.
+        Recalculates noise power for each chunk since noise segments vary.
+        
+        Args:
+            clean: Clean audio segment
+            noise: Noise audio segment (same length as clean)
+            snr_db: Target SNR in decibels (positive = speech louder, negative = noise louder)
+        
+        Returns:
+            Mixed audio at target SNR
+        """
+        # Step 1: Normalize clean audio to standard RMS = 0.1
+        clean_rms = np.sqrt(np.mean(clean ** 2)) + 1e-8
+        clean_normalized = clean * (0.1 / clean_rms)
+        
+        # Step 2: Normalize noise chunk to standard RMS = 0.1
+        # CRITICAL: Calculate power for THIS specific noise chunk (not the whole file)
+        noise_rms = np.sqrt(np.mean(noise ** 2)) + 1e-8
+        noise_normalized = noise * (0.1 / noise_rms)
+        
+        # Step 3: Calculate target noise power based on SNR
+        # SNR(dB) = 10*log10(signal_power/noise_power)
+        # => noise_power_target = signal_power / (10^(SNR/10))
+        clean_power = np.mean(clean_normalized ** 2)
+        snr_linear = 10 ** (snr_db / 10.0)
+        target_noise_power = clean_power / snr_linear
+        
+        # Step 4: Scale normalized noise to achieve target SNR
+        # Recalculate noise power for the normalized chunk
+        noise_power = np.mean(noise_normalized ** 2) + 1e-8
+        scaling = np.sqrt(target_noise_power / noise_power)
+        scaled_noise = noise_normalized * scaling
+        
+        # Step 5: Mix and return
+        return clean_normalized + scaled_noise
+
     def __getitem__(self, idx):
-        """
-        Load noisy music and its corresponding clean version.
-        Ensures exact audio_length for all samples.
-        """
-        # Load noisy audio (use full path)
-        noisy_path = os.path.join(self.noisy_dir, self.noisy_files[idx])
-        noisy_audio, _ = librosa.load(noisy_path, sr=self.sample_rate)
-        
-        # Extract clean filename from noisy filename
-        # Noisy format: "song_name_snr_10dB.flac"
-        # Clean format: "song_name.flac"
-        noisy_filename = Path(self.noisy_files[idx]).name
-        
-        if '_snr_' in noisy_filename:
-            # Remove SNR suffix
-            clean_filename = noisy_filename.split('_snr_')[0]
-            # Add back extension
-            ext = Path(noisy_filename).suffix
-            clean_filename = clean_filename + ext
-        else:
-            clean_filename = noisy_filename
-        
-        # Get the directory structure from noisy file and apply to clean
-        noisy_rel_dir = Path(self.noisy_files[idx]).parent
-        clean_rel_path = noisy_rel_dir / clean_filename
-        
-        # Load clean audio
-        clean_path = os.path.join(self.clean_dir, str(clean_rel_path))
-        clean_audio, _ = librosa.load(clean_path, sr=self.sample_rate)
-        
-        # Ensure both have same length
-        min_length = min(len(noisy_audio), len(clean_audio))
-        noisy_audio = noisy_audio[:min_length]
-        clean_audio = clean_audio[:min_length]
-        
-        # Ensure exact audio_length
-        if len(noisy_audio) > self.audio_length:
-            noisy_audio = noisy_audio[:self.audio_length]
-            clean_audio = clean_audio[:self.audio_length]
-        elif len(noisy_audio) < self.audio_length:
-            pad_length = self.audio_length - len(noisy_audio)
-            noisy_audio = np.pad(noisy_audio, (0, pad_length), mode='constant')
-            clean_audio = np.pad(clean_audio, (0, pad_length), mode='constant')
-        
-        # Force exact length
-        noisy_audio = noisy_audio[:self.audio_length]
-        clean_audio = clean_audio[:self.audio_length]
-        
-        # Verify lengths
-        assert len(noisy_audio) == self.audio_length
-        assert len(clean_audio) == self.audio_length
-        
-        # Convert to tensors
-        noisy_tensor = torch.FloatTensor(noisy_audio).unsqueeze(0)
-        clean_tensor = torch.FloatTensor(clean_audio).unsqueeze(0)
-        
+        clean_path = self.clean_files[idx % len(self.clean_files)]
+        clean_audio, sr = librosa.load(clean_path, sr=self.sample_rate)
+
+        if len(clean_audio) < self.audio_length:
+            reps = int(np.ceil(self.audio_length / len(clean_audio)))
+            clean_audio = np.tile(clean_audio, reps)
+
+        start = np.random.randint(0, len(clean_audio) - self.audio_length + 1)
+        clean_seg = clean_audio[start:start + self.audio_length]
+
+        if len(self.noise_audio) < self.audio_length:
+            reps = int(np.ceil(self.audio_length / len(self.noise_audio)))
+            self.noise_audio = np.tile(self.noise_audio, reps)
+
+        max_start = len(self.noise_audio) - self.audio_length
+        n_start = np.random.randint(0, max_start + 1) if max_start > 0 else 0
+        noise_seg = self.noise_audio[n_start:n_start + self.audio_length]
+
+        snr_db = float(np.random.uniform(5.0, 20.0))
+        noisy_seg = self._add_noise_snr(clean_seg, noise_seg, snr_db)
+
+        noisy_tensor = torch.FloatTensor(noisy_seg).unsqueeze(0)
+        clean_tensor = torch.FloatTensor(clean_seg).unsqueeze(0)
         return noisy_tensor, clean_tensor
 
 
@@ -264,13 +290,24 @@ def train_model(config, resume_from_checkpoint=None):
         print(f"🔄 Resuming from: {resume_from_checkpoint}")
     print(f"{'='*60}\n")
     
-    # Create dataset
-    dataset = MusicAudioDataset(
-        config.CLEAN_AUDIO_DIR,
-        config.NOISY_AUDIO_DIR,
-        config.AUDIO_LENGTH,
-        config.SAMPLE_RATE
-    )
+    # Create dataset: concat of OnFlyMusicNoiseDataset over all CLEAN_AUDIO_DIRS
+    from torch.utils.data import ConcatDataset
+
+    datasets = []
+    for clean_dir in getattr(config, "CLEAN_AUDIO_DIRS", []):
+        datasets.append(
+            OnFlyMusicNoiseDataset(
+                clean_dir,
+                config.NOISE_FILE,
+                config.AUDIO_LENGTH,
+                config.SAMPLE_RATE,
+            )
+        )
+
+    if not datasets:
+        raise RuntimeError("No CLEAN_AUDIO_DIRS configured for MusicConfig")
+
+    dataset = ConcatDataset(datasets)
     
     # Split into train and validation
     train_size = int(config.TRAIN_SPLIT * len(dataset))
