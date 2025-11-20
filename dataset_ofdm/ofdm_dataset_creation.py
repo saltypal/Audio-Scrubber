@@ -58,9 +58,9 @@ def main():
     NUM_SAMPLES = 1_000_000  # Total samples to generate
     FFT_SIZE = 64
     CP_LEN = 16
-    SAMPLE_RATE = 1_000_000 # 1 MHz
-    SNR_DB = 15             # Moderate noise
-    FREQ_OFFSET = 1000      # 1 kHz offset
+    SAMPLE_RATE = 2_000_000 # 2 MHz (match SDR_PARAMS for hardware compatibility)
+    SNR_DB = 15             # Moderate noise (center of training range)
+    FREQ_OFFSET = 40000     # 40 kHz offset (handles RTL-SDR drift, 20-50 ppm error)
     
     print(f"Generating {NUM_SAMPLES} samples...")
     print(f"FFT Size: {FFT_SIZE}, CP: {CP_LEN}")
@@ -77,8 +77,8 @@ def main():
         clean_sym = generate_ofdm_symbol(FFT_SIZE, CP_LEN)
         
         # Apply channel model
-        # We vary SNR slightly per symbol for robustness
-        current_snr = np.random.uniform(SNR_DB - 5, SNR_DB + 5)
+        # Wide SNR range: from clean (30 dB) to trash (-5 dB) for real-world robustness
+        current_snr = np.random.uniform(-5, 30)
         current_fo = np.random.uniform(-FREQ_OFFSET, FREQ_OFFSET)
         
         noisy_sym = apply_channel_impairments(clean_sym, current_snr, current_fo, SAMPLE_RATE)
