@@ -51,7 +51,7 @@ class MusicConfig:
     # Paths - Using raw music as clean, FM noise as background
     CLEAN_AUDIO_DIRS = [str(Paths.MUSIC_ROOT)]
     NOISE_FILE = str(Paths.NOISE_ROOT / "superNoiseFM.wav")
-    MODEL_SAVE_PATH = str(Paths.MODEL_MUSIC_BEST)
+    MODEL_SAVE_PATH = "saved_models/music_100_norm/unet1d_best_music.pth"
 
     # Audio parameters - Music specific (44.1kHz)
     SAMPLE_RATE = AudioSettings.SAMPLE_RATE  # 44100 Hz
@@ -59,7 +59,7 @@ class MusicConfig:
 
     # Training hyperparameters
     BATCH_SIZE = TrainingConfig.BATCH_SIZE
-    NUM_EPOCHS = TrainingConfig.NUM_EPOCHS
+    NUM_EPOCHS = 100  # Full training
     LEARNING_RATE = TrainingConfig.LEARNING_RATE
     TRAIN_SPLIT = TrainingConfig.TRAIN_SPLIT
 

@@ -108,12 +108,12 @@ class AudioSettings:
     """Audio processing settings"""
     
     # Sample rate for all audio processing
-    SAMPLE_RATE = 22050
+    SAMPLE_RATE = 44100  # Updated to 44.1 kHz for overnight training
     
     # Audio length for training (in samples)
     # Must be divisible by 16 (2^4) for U-Net with 4 downsampling layers
     # Using ~2 seconds: 44096 samples (closest to 44100 that's divisible by 16)
-    AUDIO_LENGTH = 44096  # ~2 seconds, divisible by 16
+    AUDIO_LENGTH = 88192  # 2 seconds at 44.1 kHz  # ~2 seconds, divisible by 16
     
     # Real-time processing settings
     CHUNK_SIZE = 4096  # Samples per chunk for real-time processing
@@ -159,7 +159,7 @@ class TrainingConfig:
     # For a 6GB GPU, use a smaller batch size to avoid OOM
     BATCH_SIZE = 4
     LEARNING_RATE = 0.0001  # Standard for Adam optimizer on audio tasks
-    NUM_EPOCHS = 100  # Increased for deeper training
+    NUM_EPOCHS = 100  # Full training run  # Increased for deeper training
     
     # Optimizer settings (AdamW generally better for deep learning)
     OPTIMIZER = 'adamw'  # 'adam' or 'adamw' - AdamW has better weight decay
@@ -229,7 +229,7 @@ class RTLSDRSettings:
     FM_FREQUENCY = 101.1e6  # 99.5 MHz
     
     # Sample rate for RTL-SDR
-    SDR_SAMPLE_RATE = 22050
+    SDR_SAMPLE_RATE = 44100  # Updated to 44.1 kHz for overnight training
     
     # Audio format from rtl_fm
     RTL_FM_FORMAT = 's16le'  # 16-bit signed little-endian
