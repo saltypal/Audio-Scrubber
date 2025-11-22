@@ -27,4 +27,4 @@ Thumbs.db
 # Temporary files
 *.log
 *.tmp
-Tests
+Tests/samples/testing9/tests
