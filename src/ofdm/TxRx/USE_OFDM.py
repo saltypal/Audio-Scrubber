@@ -43,7 +43,7 @@ Usage Examples:
 ================================================================================
 """
 
-def visualize_images(original_path, noisy_path=None, denoised_path=None):
+def visualize_images(original_path, noisy_path=None, denoised_path=None, save_path=None):
     """Display original, noisy (if available), and denoised (if available) images."""
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     
@@ -78,7 +78,13 @@ def visualize_images(original_path, noisy_path=None, denoised_path=None):
         axes[2].axis('off')
     
     plt.tight_layout()
-    plt.show()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"📊 Comparison plot saved: {save_path}")
+        plt.close()
+    else:
+        plt.show()
 
 # --- DEFAULT CONFIGURATION (Modify as needed) ---
 CONFIG = {
@@ -88,7 +94,9 @@ CONFIG = {
     'RX_GAIN': 'auto',
     'DURATION': 5,
     'MODEL_PATH': 'saved_models/OFDM/unet1d_best.pth',
-    'DEFAULT_FILE': 'src/ofdm/TxRx/Transcorn/testfile_img.png'
+    'DEFAULT_FILE': 'src/ofdm/TxRx/Transcorn/testfile_img.png',
+    'OUTPUT_DIR': 'src/ofdm/TxRx/Transcorn/output',
+    'PLOT_DIR': 'src/ofdm/TxRx/Transcorn/plots'
 }
 
 def main():
@@ -144,9 +152,30 @@ def main():
                 print(f"📁 Transmitting file: {file_path}")
                 tx_data, metadata = SignalUtils.file_to_qpsk(file_path)
                 
-                # Show original signal before transmission
-                print("\n📊 Visualizing signal before transmission...")
-                SignalUtils.plot_signal(tx_data, title="Original Signal (Before Tx)")
+                # Save original signal plot before transmission
+                print("\n📊 Saving signal plot before transmission...")
+                plot_dir = Path(CONFIG['PLOT_DIR'])
+                plot_dir.mkdir(parents=True, exist_ok=True)
+                
+                plt.figure(figsize=(10, 8))
+                plt.subplot(2, 1, 1)
+                plt.title("Original Signal (Before Tx) - Time Domain")
+                plt.plot(np.real(tx_data[:1000]), label='I (Real)', alpha=0.7)
+                plt.plot(np.imag(tx_data[:1000]), label='Q (Imag)', alpha=0.7)
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                plt.subplot(2, 1, 2)
+                plt.title("Original Signal (Before Tx) - Frequency Domain")
+                plt.psd(tx_data, NFFT=1024, Fs=SDR_PARAMS['SAMPLE_RATE']/1e6)
+                plt.xlabel("Frequency (MHz)")
+                plt.grid(True, alpha=0.3)
+                
+                plt.tight_layout()
+                tx_plot_path = plot_dir / 'signal_before_tx.png'
+                plt.savefig(tx_plot_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                print(f"   Saved: {tx_plot_path}")
             else:
                 print("🎲 Generating Random QPSK Data...")
                 tx_data = tx.generate_test_signal()
@@ -176,48 +205,68 @@ def main():
             data = rx.receive(duration=args.duration, plot=False)
             
             if data is not None:
-                # Show received signal
-                print("\n📊 Visualizing received signal...")
-                SignalUtils.plot_signal(data, title="Received Signal (After Rx)")
+                # Create output directories
+                output_dir = Path(args.save) if args.save else Path(CONFIG['OUTPUT_DIR'])
+                plot_dir = Path(CONFIG['PLOT_DIR'])
+                output_dir.mkdir(parents=True, exist_ok=True)
+                plot_dir.mkdir(parents=True, exist_ok=True)
                 
-                # Determine save paths
-                save_dir = Path(args.save) if args.save else Path('output')
-                if not save_dir.exists():
-                    save_dir.mkdir(parents=True, exist_ok=True)
+                # Save received signal plot
+                print("\n📊 Saving received signal plot...")
+                plt.figure(figsize=(10, 8))
+                plt.subplot(2, 1, 1)
+                plt.title("Received Signal (After Rx) - Time Domain")
+                plt.plot(np.real(data[:1000]), label='I (Real)', alpha=0.7)
+                plt.plot(np.imag(data[:1000]), label='Q (Imag)', alpha=0.7)
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                plt.subplot(2, 1, 2)
+                plt.title("Received Signal (After Rx) - Frequency Domain")
+                plt.psd(data, NFFT=1024, Fs=SDR_PARAMS['SAMPLE_RATE']/1e6)
+                plt.xlabel("Frequency (MHz)")
+                plt.grid(True, alpha=0.3)
+                
+                plt.tight_layout()
+                rx_plot_path = plot_dir / 'signal_after_rx.png'
+                plt.savefig(rx_plot_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                print(f"   Saved: {rx_plot_path}")
                 
                 if args.denoise:
                     # Save noisy version first
-                    noisy_file = save_dir / 'received_noisy.png'
+                    noisy_file = output_dir / 'received_noisy.png'
                     SignalUtils.qpsk_to_file(data, noisy_file)
-                    print(f"💾 Saved noisy: {noisy_file}")
+                    print(f"\n💾 Saved noisy: {noisy_file}")
                     
                     # Denoise
                     print("\n🧠 Applying AI denoising...")
                     clean_data = SignalUtils.denoise_signal(data, args.model)
                     
                     # Save denoised version
-                    denoised_file = save_dir / 'received_denoised.png'
+                    denoised_file = output_dir / 'received_denoised.png'
                     SignalUtils.qpsk_to_file(clean_data, denoised_file)
                     print(f"💾 Saved denoised: {denoised_file}")
                     
-                    # Show 3-image comparison: Original, Noisy, Denoised
+                    # Save 3-image comparison: Original, Noisy, Denoised
+                    comparison_plot = plot_dir / 'image_comparison.png'
                     if args.mode == 'loopback' and original_file:
-                        print("\n🖼️  Showing comparison: Original → Noisy → Denoised")
-                        visualize_images(original_file, noisy_file, denoised_file)
+                        print("\n🖼️  Saving comparison: Original → Noisy → Denoised")
+                        visualize_images(original_file, noisy_file, denoised_file, save_path=comparison_plot)
                     else:
-                        print("\n🖼️  Showing comparison: Noisy → Denoised")
-                        visualize_images(noisy_file, noisy_file, denoised_file)
+                        print("\n🖼️  Saving comparison: Noisy → Denoised")
+                        visualize_images(noisy_file, noisy_file, denoised_file, save_path=comparison_plot)
                 else:
                     # No denoising - just save received
-                    if args.save:
-                        output_file = save_dir / 'received.png'
-                        SignalUtils.qpsk_to_file(data, output_file)
-                        print(f"💾 Saved received: {output_file}")
-                        
-                        # Show comparison: Original vs Received
-                        if args.mode == 'loopback' and original_file:
-                            print("\n🖼️  Showing comparison: Original → Received")
-                            visualize_images(original_file, output_file, None)
+                    output_file = output_dir / 'received.png'
+                    SignalUtils.qpsk_to_file(data, output_file)
+                    print(f"\n💾 Saved received: {output_file}")
+                    
+                    # Save comparison: Original vs Received
+                    if args.mode == 'loopback' and original_file:
+                        comparison_plot = plot_dir / 'image_comparison.png'
+                        print("\n🖼️  Saving comparison: Original → Received")
+                        visualize_images(original_file, output_file, None, save_path=comparison_plot)
             
             rx.close()
 
