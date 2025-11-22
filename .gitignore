@@ -28,3 +28,4 @@ Thumbs.db
 *.log
 *.tmp
 Tests/
+received_TRADITIONAL_GARBAGE.txt

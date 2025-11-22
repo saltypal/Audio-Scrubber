@@ -2,6 +2,9 @@ import sys
 import argparse
 import time
 from pathlib import Path
+import matplotlib.pyplot as plt
+from PIL import Image
+import numpy as np
 
 # Add parent directory to path to allow importing sdr_hardware
 sys.path.insert(0, str(Path(__file__).parent))
@@ -37,10 +40,45 @@ Usage Examples:
    python universal_sdr.py --mode rx --save received_output
 
 6. Loopback Test (Transmit File -> Receive -> Denoise -> Save):
-   python universal_sdr.py --mode loopback --type file --file test.png --denoise --save output
-
 ================================================================================
 """
+
+def visualize_images(original_path, noisy_path=None, denoised_path=None):
+    """Display original, noisy (if available), and denoised (if available) images."""
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    # Original
+    if Path(original_path).exists():
+        img = Image.open(original_path)
+        axes[0].imshow(img)
+        axes[0].set_title('Original (Before Tx)', fontweight='bold', fontsize=14)
+        axes[0].axis('off')
+    else:
+        axes[0].text(0.5, 0.5, 'Original\nNot Available', ha='center', va='center')
+        axes[0].axis('off')
+    
+    # Noisy (Received)
+    if noisy_path and Path(noisy_path).exists():
+        img = Image.open(noisy_path)
+        axes[1].imshow(img)
+        axes[1].set_title('After Rx (Noisy)', fontweight='bold', fontsize=14)
+        axes[1].axis('off')
+    else:
+        axes[1].text(0.5, 0.5, 'Received\nNot Available', ha='center', va='center')
+        axes[1].axis('off')
+    
+    # Denoised
+    if denoised_path and Path(denoised_path).exists():
+        img = Image.open(denoised_path)
+        axes[2].imshow(img)
+        axes[2].set_title('After AI Denoise', fontweight='bold', fontsize=14)
+        axes[2].axis('off')
+    else:
+        axes[2].text(0.5, 0.5, 'Denoised\nNot Available', ha='center', va='center')
+        axes[2].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
 
 # --- DEFAULT CONFIGURATION (Modify as needed) ---
 CONFIG = {
@@ -99,10 +137,16 @@ def main():
             
             # Prepare Data
             tx_data = None
+            original_file = None
             if args.type == 'file':
                 file_path = args.file if args.file else CONFIG['DEFAULT_FILE']
+                original_file = file_path
                 print(f"📁 Transmitting file: {file_path}")
                 tx_data, metadata = SignalUtils.file_to_qpsk(file_path)
+                
+                # Show original signal before transmission
+                print("\n📊 Visualizing signal before transmission...")
+                SignalUtils.plot_signal(tx_data, title="Original Signal (Before Tx)")
             else:
                 print("🎲 Generating Random QPSK Data...")
                 tx_data = tx.generate_test_signal()
@@ -128,12 +172,54 @@ def main():
             # Receive & Process
             print(f"📥 Receiving for {args.duration} seconds...")
             
-            # Determine save path
-            save_path = args.save if args.save else None
+            # Receive data
+            data = rx.receive(duration=args.duration, plot=False)
             
-            # If denoising is requested, use the high-level method
-            data = rx.receive_and_process(duration=args.duration, denoise=args.denoise, 
-                                         model_path=args.model, save_file=save_path)
+            if data is not None:
+                # Show received signal
+                print("\n📊 Visualizing received signal...")
+                SignalUtils.plot_signal(data, title="Received Signal (After Rx)")
+                
+                # Determine save paths
+                save_dir = Path(args.save) if args.save else Path('output')
+                if not save_dir.exists():
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                
+                if args.denoise:
+                    # Save noisy version first
+                    noisy_file = save_dir / 'received_noisy.png'
+                    SignalUtils.qpsk_to_file(data, noisy_file)
+                    print(f"💾 Saved noisy: {noisy_file}")
+                    
+                    # Denoise
+                    print("\n🧠 Applying AI denoising...")
+                    clean_data = SignalUtils.denoise_signal(data, args.model)
+                    
+                    # Save denoised version
+                    denoised_file = save_dir / 'received_denoised.png'
+                    SignalUtils.qpsk_to_file(clean_data, denoised_file)
+                    print(f"💾 Saved denoised: {denoised_file}")
+                    
+                    # Show 3-image comparison: Original, Noisy, Denoised
+                    if args.mode == 'loopback' and original_file:
+                        print("\n🖼️  Showing comparison: Original → Noisy → Denoised")
+                        visualize_images(original_file, noisy_file, denoised_file)
+                    else:
+                        print("\n🖼️  Showing comparison: Noisy → Denoised")
+                        visualize_images(noisy_file, noisy_file, denoised_file)
+                else:
+                    # No denoising - just save received
+                    if args.save:
+                        output_file = save_dir / 'received.png'
+                        SignalUtils.qpsk_to_file(data, output_file)
+                        print(f"💾 Saved received: {output_file}")
+                        
+                        # Show comparison: Original vs Received
+                        if args.mode == 'loopback' and original_file:
+                            print("\n🖼️  Showing comparison: Original → Received")
+                            visualize_images(original_file, output_file, None)
+            
+            rx.close()
 
     print("\n✅ Operation Complete.")
 
