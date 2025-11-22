@@ -433,6 +433,7 @@ if __name__ == "__main__":
     parser.add_argument('--learning-rate', '-lr', type=float, default=None, help='Learning rate')
     parser.add_argument('--resume', '-r', type=str, default=None, help='Resume from checkpoint')
     parser.add_argument('--cpu', action='store_true', help='Force CPU (disable CUDA)')
+    parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], default=None, help='Device to use (cpu or cuda). Overrides automatic detection.')
     parser.add_argument('--no-amp', action='store_true', help='Disable mixed precision training')
     
     args = parser.parse_args()
@@ -450,7 +451,31 @@ if __name__ == "__main__":
     if args.learning_rate:
         config.LEARNING_RATE = args.learning_rate
         print(f"Learning rate set to: {args.learning_rate}")
+    # Explicit device selection: --device takes precedence unless --cpu is provided
+    if args.device is not None:
+        # User asked for a specific device
+        if args.device == 'cuda' and not torch.cuda.is_available():
+            print("Warning: --device cuda requested but CUDA is not available. Falling back to CPU.")
+            config.DEVICE = torch.device('cpu')
+            config.USE_AMP = False
+            config.PIN_MEMORY = False
+            config.NUM_WORKERS = 0
+            config.BATCH_SIZE = 4 if config.BATCH_SIZE is None else config.BATCH_SIZE
+        else:
+            config.DEVICE = torch.device(args.device)
+            # Enable CUDA optimizations only when CUDA is actually available
+            if config.DEVICE.type == 'cuda' and torch.cuda.is_available():
+                config.USE_AMP = True
+                config.PIN_MEMORY = True
+                config.NUM_WORKERS = 2
+            else:
+                config.USE_AMP = False
+                config.PIN_MEMORY = False
+                config.NUM_WORKERS = 0
+        print(f"Device set to: {config.DEVICE}")
+
     if args.cpu:
+        # --cpu explicitly forces CPU and overrides --device
         config.DEVICE = torch.device('cpu')
         config.USE_AMP = False
         config.PIN_MEMORY = False
