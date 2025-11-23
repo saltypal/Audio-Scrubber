@@ -6,6 +6,7 @@ OFDM MODULATION CLASS - With AI Denoising Support
 
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 from pathlib import Path
 import sys
 from pathlib import Path
@@ -62,13 +63,16 @@ class OFDM_Modulation:
             search_paths = [
                 'saved_models/OFDM/final_models',
                 'saved_models/OFDM',
+                'x',  # Check x directory too
             ]
             
             for search_dir in search_paths:
                 model_dir = Path(search_dir)
                 if model_dir.exists():
-                    # Look for best model
-                    candidates = list(model_dir.glob('*best*.pth')) + \
+                    # Look for 1D U-Net model first, then other candidates
+                    candidates = list(model_dir.glob('*1dunet*.pth')) + \
+                                list(model_dir.glob('unet1d*.pth')) + \
+                                list(model_dir.glob('*best*.pth')) + \
                                 list(model_dir.glob('ofdm_final*.pth'))
                     if candidates:
                         self.model_path = str(candidates[0])
@@ -81,7 +85,14 @@ class OFDM_Modulation:
         
         try:
             self.model = OFDM_UNet(in_channels=2, out_channels=2)
-            state_dict = torch.load(self.model_path, map_location=self.device)
+            checkpoint = torch.load(self.model_path, map_location=self.device)
+            
+            # Handle checkpoint dict vs direct state_dict
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+            else:
+                state_dict = checkpoint
+            
             self.model.load_state_dict(state_dict)
             self.model = self.model.to(self.device)
             self.model.eval()
@@ -126,8 +137,12 @@ class OFDM_Modulation:
             f"BeforeTX_OFDM_{model_name}_waveform.png"
         )
         
+        # Calculate actual power
+        actual_power = np.mean(np.abs(waveform)**2)
+        
         print(f"✅ Modulated to {len(waveform)} samples")
-        print(f"   Symbols: {info.get('num_ofdm_symbols', 0)}, Power: {info.get('power', 0):.2f}")
+        print(f"   Symbols: {info.get('num_ofdm_symbols', 0)}")
+        print(f"   TX Power: {actual_power:.3f} ({10*np.log10(actual_power + 1e-12):.2f} dB)")
         return waveform
     
     def demodulate(self, waveform):
@@ -304,17 +319,17 @@ class OFDM_Modulation:
         # QPSK reference points
         qpsk_ref = np.array([1+1j, -1+1j, 1-1j, -1-1j]) / np.sqrt(2)
         
-        # Row 2: Constellations
-        # Left: Constellation BEFORE Denoising
+        # Row 2: QPSK Constellations
+        # Left: BEFORE AI Denoising (Noisy RX)
         ax3 = fig.add_subplot(gs[1, 0])
         if noisy_symbols is not None and len(noisy_symbols) > 0:
             ax3.scatter(np.real(noisy_symbols), np.imag(noisy_symbols),
-                       alpha=0.4, s=15, c='orange', label='Noisy Symbols')
+                       alpha=0.4, s=15, c='orange', label='Noisy RX Symbols')
             ax3.scatter(np.real(qpsk_ref), np.imag(qpsk_ref),
                        c='red', s=250, marker='x', linewidths=4, label='Ideal QPSK', zorder=5)
         ax3.axhline(0, color='k', linewidth=0.8, alpha=0.3)
         ax3.axvline(0, color='k', linewidth=0.8, alpha=0.3)
-        ax3.set_title('BEFORE Denoising - Constellation', fontweight='bold', fontsize=14)
+        ax3.set_title('🔴 BEFORE AI Denoising - QPSK Constellation', fontweight='bold', fontsize=14)
         ax3.set_xlabel('I (In-Phase)', fontsize=11)
         ax3.set_ylabel('Q (Quadrature)', fontsize=11)
         ax3.legend(loc='upper right', fontsize=10)
@@ -323,16 +338,16 @@ class OFDM_Modulation:
         ax3.set_xlim(-1.5, 1.5)
         ax3.set_ylim(-1.5, 1.5)
         
-        # Right: Constellation AFTER Denoising
+        # Right: AFTER AI Denoising (Clean)
         ax4 = fig.add_subplot(gs[1, 1])
         if denoised_symbols is not None and len(denoised_symbols) > 0:
             ax4.scatter(np.real(denoised_symbols), np.imag(denoised_symbols),
-                       alpha=0.4, s=15, c='blue', label='Denoised Symbols')
+                       alpha=0.4, s=15, c='blue', label='AI Denoised Symbols')
             ax4.scatter(np.real(qpsk_ref), np.imag(qpsk_ref),
                        c='red', s=250, marker='x', linewidths=4, label='Ideal QPSK', zorder=5)
         ax4.axhline(0, color='k', linewidth=0.8, alpha=0.3)
         ax4.axvline(0, color='k', linewidth=0.8, alpha=0.3)
-        ax4.set_title('AFTER Denoising - Constellation', fontweight='bold', fontsize=14)
+        ax4.set_title('🟢 AFTER AI Denoising - QPSK Constellation', fontweight='bold', fontsize=14)
         ax4.set_xlabel('I (In-Phase)', fontsize=11)
         ax4.set_ylabel('Q (Quadrature)', fontsize=11)
         ax4.legend(loc='upper right', fontsize=10)
@@ -469,7 +484,11 @@ class OFDM_Modulation:
         return metrics
     
     def _extract_symbols(self, waveform):
-        """Extract QPSK symbols from waveform for constellation plot."""
+        """Extract QPSK symbols from waveform for constellation plot.
+
+        Uses config.data_carriers (not data_subcarriers) which holds the indices
+        of active data subcarriers relative to DC.
+        """
         try:
             # Remove CP and apply FFT
             symbol_size = self.config.fft_size + self.config.cp_len
@@ -481,8 +500,8 @@ class OFDM_Modulation:
                 ofdm_symbol_no_cp = ofdm_symbol[self.config.cp_len:]
                 freq_domain = np.fft.fft(ofdm_symbol_no_cp)
                 
-                # Extract data carriers
-                data_indices = self.config.data_subcarriers
+                # Extract data carriers (attribute is data_carriers)
+                data_indices = self.config.data_carriers
                 data_symbols = freq_domain[data_indices]
                 symbols_all.extend(data_symbols)
             

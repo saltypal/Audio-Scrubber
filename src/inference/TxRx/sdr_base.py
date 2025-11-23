@@ -29,8 +29,9 @@ SDR_CONFIG = {
     'sample_rate': 2e6,        # 2 MSPS
     'bandwidth': 2e6,          # 2 MHz
     'tx_gain': 0,              # Pluto TX gain (dB) - Increased for better signal power
-    'rx_gain': 'auto',         # RTL-SDR gain
-    'pluto_ip': 'ip:192.168.2.1',
+    'rx_gain': 20,             # Pluto RX gain (dB)
+    'pluto_tx_ip': 'ip:192.168.2.1',  # TX Pluto IP
+    'pluto_rx_ip': 'ip:192.168.3.1',  # RX Pluto IP (different device)
     'buffer_size': 65536,      # Minimum buffer size
 }
 
@@ -40,8 +41,9 @@ FM_CONFIG = {
     'sample_rate': 2e6,        # 2 MSPS
     'bandwidth': 2e6,          # 2 MHz
     'tx_gain': 0,              # Pluto TX gain (dB) - Increased for better signal power
-    'rx_gain': 'auto',         # RTL-SDR gain
-    'pluto_ip': 'ip:192.168.2.1',
+    'rx_gain': 20,             # Pluto RX gain (dB)
+    'pluto_tx_ip': 'ip:192.168.2.1',  # TX Pluto IP
+    'pluto_rx_ip': 'ip:192.168.3.1',  # RX Pluto IP (different device)
     'buffer_size': 65536,      # Minimum buffer size
 }
 
@@ -50,7 +52,7 @@ class PlutoSDR:
     """Adalm Pluto SDR - Transmitter"""
     
     def __init__(self, ip=None):
-        self.ip = ip or SDR_CONFIG['pluto_ip']
+        self.ip = ip or SDR_CONFIG['pluto_tx_ip']
         self.sdr = None
         self.connected = False
     
@@ -163,6 +165,112 @@ class PlutoSDR:
         print("✅ Pluto stopped")
 
 
+class PlutoRX:
+    """Adalm Pluto SDR - Receiver"""
+    
+    def __init__(self, ip=None):
+        self.ip = ip or SDR_CONFIG['pluto_rx_ip']
+        self.sdr = None
+        self.connected = False
+    
+    def check_device(self):
+        """Check if RX Pluto is available."""
+        if not PLUTO_AVAILABLE:
+            print("❌ pyadi-iio not installed!")
+            return False
+        
+        print(f"🔌 Checking RX Pluto at {self.ip}...")
+        try:
+            self.sdr = adi.Pluto(self.ip)
+            self.connected = True
+            print("✅ RX Pluto detected")
+            return True
+        except Exception as e:
+            print(f"❌ RX Pluto not found: {e}")
+            self.connected = False
+            return False
+    
+    def configure(self, freq=None, rate=None, gain=None, bandwidth=None):
+        """Configure RX parameters."""
+        if not self.connected:
+            print("❌ Not connected. Call check_device() first.")
+            return False
+        
+        try:
+            self.sdr.rx_lo = int(freq or SDR_CONFIG['center_freq'])
+            self.sdr.sample_rate = int(rate or SDR_CONFIG['sample_rate'])
+            self.sdr.rx_hardwaregain_chan0 = int(gain if gain is not None else SDR_CONFIG['rx_gain'])
+            self.sdr.rx_rf_bandwidth = int(bandwidth or SDR_CONFIG['bandwidth'])
+            self.sdr.rx_buffer_size = SDR_CONFIG['buffer_size']
+            
+            print(f"⚙️  RX Pluto configured:")
+            print(f"   Freq: {self.sdr.rx_lo/1e6:.1f} MHz")
+            print(f"   Rate: {self.sdr.sample_rate/1e6:.1f} MSPS")
+            print(f"   Gain: {self.sdr.rx_hardwaregain_chan0} dB")
+            return True
+        except Exception as e:
+            print(f"❌ Configuration failed: {e}")
+            return False
+    
+    def receive(self, duration=5):
+        """
+        Capture IQ samples.
+        
+        Args:
+            duration: Capture duration in seconds
+            
+        Returns:
+            Complex64 IQ samples
+        """
+        if not self.connected or not self.sdr:
+            print("❌ Not configured. Call configure() first.")
+            return None
+        
+        num_samples = int(self.sdr.sample_rate * duration)
+        print(f"📥 Capturing {duration}s ({num_samples:,} samples)...")
+        
+        try:
+            # Read samples from Pluto RX buffer
+            samples = self.sdr.rx()
+            
+            # If we need more samples, keep reading
+            if len(samples) < num_samples:
+                all_samples = [samples]
+                remaining = num_samples - len(samples)
+                
+                while remaining > 0:
+                    chunk = self.sdr.rx()
+                    all_samples.append(chunk)
+                    remaining -= len(chunk)
+                
+                samples = np.concatenate(all_samples)[:num_samples]
+            else:
+                samples = samples[:num_samples]
+            
+            print(f"✅ Captured {len(samples):,} samples")
+            print(f"   Power: {np.mean(np.abs(samples)**2):.3f}")
+            print(f"   Peak: {np.max(np.abs(samples)):.3f}")
+            
+            return samples.astype(np.complex64)
+        except Exception as e:
+            print(f"❌ Capture failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def stop(self):
+        """Stop and cleanup."""
+        if self.sdr:
+            try:
+                self.sdr.rx_destroy_buffer()
+            except:
+                pass
+            del self.sdr
+            self.sdr = None
+            self.connected = False
+        print("✅ RX Pluto stopped")
+
+
 class RTLSDR:
     """RTL-SDR - Receiver"""
     
@@ -238,9 +346,12 @@ class RTLSDR:
                 remaining -= len(chunk)
             
             samples = np.concatenate(samples)
+            power = np.mean(np.abs(samples)**2)
+            peak = np.max(np.abs(samples))
+            
             print(f"✅ Captured {len(samples):,} samples")
-            print(f"   Power: {np.mean(np.abs(samples)**2):.3f}")
-            print(f"   Peak: {np.max(np.abs(samples)):.3f}")
+            print(f"   Power: {power:.6f} ({10*np.log10(power + 1e-12):.2f} dB)")
+            print(f"   Peak: {peak:.3f}")
             
             return samples.astype(np.complex64)
         except Exception as e:

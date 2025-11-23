@@ -18,7 +18,7 @@ import numpy as np
 # Add parent directories to path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from inference.TxRx.sdr_base import PlutoSDR, RTLSDR, SDR_CONFIG, FM_CONFIG
+from inference.TxRx.sdr_base import PlutoSDR, PlutoRX, RTLSDR, SDR_CONFIG, FM_CONFIG
 from inference.TxRx.ofdm_modulation import OFDM_Modulation
 from inference.TxRx.fm_modulation import FM_Modulation
 from inference.TxRx.sdr_utils import SDRUtils
@@ -70,13 +70,13 @@ def main():
     print("-" * 80)
     
     pluto = PlutoSDR()
-    rtlsdr = RTLSDR()
+    rx_sdr = RTLSDR()  # Use RTL-SDR for all RX
     
     if not pluto.check_device():
-        print("❌ Pluto not available. Aborting.")
+        print("❌ TX Pluto not available. Aborting.")
         return
     
-    if not rtlsdr.check_device():
+    if not rx_sdr.check_device():
         print("❌ RTL-SDR not available. Aborting.")
         return
     
@@ -93,7 +93,7 @@ def main():
     tx_gain = args.tx_gain if args.tx_gain is not None else config['tx_gain']
     
     pluto.configure(freq=freq, gain=tx_gain)
-    rtlsdr.configure(freq=freq)
+    rx_sdr.configure(freq=freq)
     
     print(f"📻 Frequency: {freq/1e6:.3f} MHz ({args.mode.upper()} mode)")
     print(f"📡 TX Gain: {tx_gain} dB")
@@ -144,7 +144,7 @@ def main():
             if tx_waveform is None:
                 print("❌ Modulation failed. Check audio file path.")
                 pluto.stop()
-                rtlsdr.stop()
+                rx_sdr.stop()
                 return
     
     # ========== STEP 4: Transmit ==========
@@ -209,7 +209,7 @@ def main():
                 
                 # Receive while transmitting
                 rx_duration = len(fm_chunk) / config['sample_rate']
-                rx_chunk = rtlsdr.receive(duration=rx_duration)
+                rx_chunk = rx_sdr.receive(duration=rx_duration)
                 
                 if rx_chunk is not None:
                     # Demodulate chunk
@@ -286,7 +286,7 @@ def main():
         
         # Cleanup
         pluto.stop()
-        rtlsdr.stop()
+        rx_sdr.stop()
         print("\n✅ Real-time session complete")
         return
     
@@ -301,12 +301,12 @@ def main():
     print("\n📥 STEP 5: Receive Signal")
     print("-" * 80)
     
-    rx_waveform = rtlsdr.receive(duration=args.rx_duration)
+    rx_waveform = rx_sdr.receive(duration=args.rx_duration)
     
     if rx_waveform is None:
         print("❌ RX failed. Aborting.")
         pluto.stop()
-        rtlsdr.stop()
+        rx_sdr.stop()
         return
     
     # ========== STEP 6: Demodulate and Denoise ==========
@@ -365,7 +365,7 @@ def main():
     print("-" * 80)
     
     pluto.stop()
-    rtlsdr.stop()
+    rx_sdr.stop()
     
     print("\n" + "="*80)
     print("✅ INFERENCE COMPLETE")
