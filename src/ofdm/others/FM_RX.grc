@@ -1,4 +1,4 @@
-  options:
+options:
   parameters:
     author: Dusan Stokic
     catch_exceptions: 'True'
@@ -188,7 +188,7 @@ blocks:
     samp_rate: samp_rate
     type: fir_filter_ccf
     width: '10000'
-    win: window.WIN_HAMMING
+    win: window.WIN_HANN
   states:
     bus_sink: false
     bus_source: false
@@ -274,7 +274,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [808, 360.0]
+    coordinate: [488, 176.0]
     rotation: 0
     state: true
 - name: qtgui_freq_sink_x_0_0
@@ -366,7 +366,7 @@ blocks:
     comment: ''
     decim: '250'
     fbw: '0'
-    interp: '48'
+    interp: '24'
     maxoutbuf: '0'
     minoutbuf: '0'
     taps: ''
@@ -386,20 +386,20 @@ blocks:
     alias: ''
     bias: 'False'
     bufflen: '16384'
-    center_freq: '98500000'
+    center_freq: 900e6
     comment: ''
-    dev_args: rtlsdr
+    dev_args: driver=rtlsdr
     freq_correction: '0'
-    gain: '30'
+    gain: '20'
     maxoutbuf: '0'
     minoutbuf: '0'
-    samp_rate: '2000000'
+    samp_rate: samp_rate
     type: fc32
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [232, 64.0]
+    coordinate: [240, 104.0]
     rotation: 0
     state: enabled
 

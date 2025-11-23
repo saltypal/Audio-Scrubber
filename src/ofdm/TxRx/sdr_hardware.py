@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import threading
 from PIL import Image
-import torch
 
 # Hardware imports
 try:
@@ -18,15 +17,14 @@ try:
 except ImportError:
     RtlSdr = None
 
-# Try to import model definition
+# Import OFDM pipeline
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 try:
-    # Assuming this file is in src/ofdm/TxRx/
-    # We need to go up to src/ofdm/model/neuralnet.py
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-    from src.ofdm.model.neuralnet import OFDM_UNet
-    MODEL_AVAILABLE = True
+    from src.ofdm.core import OFDMTransceiver, OFDMParams
+    OFDM_AVAILABLE = True
 except ImportError:
-    MODEL_AVAILABLE = False
+    OFDM_AVAILABLE = False
+    print("⚠️  OFDM pipeline not available")
 
 """
 ================================================================================
@@ -60,15 +58,13 @@ Usage:
 # --- DEFAULT CONFIGURATION ---
 SDR_PARAMS = {
     'CENTER_FREQ': 915e6,    # 915 MHz (ISM Band)
-    'SAMPLE_RATE': 2e6,      # 2 MSPS (RTL-SDR native sweet spot)
+    'SAMPLE_RATE': 2e6,      # 2 MSPS (RTL-SDR compatible)
     'BANDWIDTH': 2e6,        # 2 MHz (match sample rate)
     'TX_GAIN': -10,          # dB (Pluto)
-    'RX_GAIN': 'auto',       # RTL-SDR
+    'RX_GAIN': 'auto',       # RTL-SDR auto gain
     'PLUTO_IP': "ip:192.168.2.1",
-    'CHUNK_SIZE': 1024,      # For AI processing
-    'MODEL_PATH': 'saved_models/OFDM/unet1d_best.pth',
-    'MAX_FILE_SIZE': 100000, # Max bytes for file transfer
-    'QPSK_SCALE': 2**14      # Scale factor for Pluto DAC
+    'TX_BUFFER_SIZE': 65536, # GNU Radio compatibility
+    'IQ_SCALE': 0.8,         # Scale to prevent clipping (0.0-1.0)
 }
 
 class SignalUtils:
@@ -283,58 +279,36 @@ class SignalUtils:
         plt.show()
 
     @staticmethod
-    def denoise_signal(signal, model_path):
-        """Apply AI Denoising using the OFDM_UNet model."""
-        if not MODEL_AVAILABLE:
-            print("⚠️ AI Model definition not found. Skipping denoising.")
-            return signal
-            
-        if not Path(model_path).exists():
-            print(f"⚠️ Model file not found at {model_path}. Skipping denoising.")
-            return signal
-
-        print(f"🧠 Applying AI Denoising using {Path(model_path).name}...")
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    def calculate_ber(tx_bits, rx_bits):
+        """Calculate Bit Error Rate between transmitted and received bits."""
+        min_len = min(len(tx_bits), len(rx_bits))
+        if min_len == 0:
+            return 1.0
         
-        # Load Model
-        model = OFDM_UNet(in_channels=2, out_channels=2).to(device)
-        try:
-            checkpoint = torch.load(model_path, map_location=device)
-            if 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-            else:
-                model.load_state_dict(checkpoint)
-            model.eval()
-        except Exception as e:
-            print(f"❌ Failed to load model: {e}")
-            return signal
-
-        # Prepare Input (Batch, 2, Length)
-        chunk_size = SDR_PARAMS['CHUNK_SIZE']
+        errors = np.sum(tx_bits[:min_len] != rx_bits[:min_len])
+        ber = errors / min_len
+        return ber
+    
+    @staticmethod
+    def plot_constellation(symbols, title="Constellation", expected_points=None):
+        """Plot constellation diagram with optional reference points."""
+        plt.figure(figsize=(8, 8))
+        plt.scatter(np.real(symbols), np.imag(symbols), alpha=0.3, s=10, label='Received')
         
-        # Pad signal
-        pad_len = (chunk_size - (len(signal) % chunk_size)) % chunk_size
-        padded_signal = np.pad(signal, (0, pad_len))
+        if expected_points is not None:
+            plt.scatter(np.real(expected_points), np.imag(expected_points), 
+                       c='red', s=200, marker='x', linewidths=3, label='Expected')
         
-        denoised_chunks = []
-        
-        with torch.no_grad():
-            for i in range(0, len(padded_signal), chunk_size):
-                chunk = padded_signal[i:i+chunk_size]
-                
-                input_tensor = torch.stack([
-                    torch.from_numpy(np.real(chunk)),
-                    torch.from_numpy(np.imag(chunk))
-                ]).unsqueeze(0).float().to(device)
-                
-                output_tensor = model(input_tensor)
-                
-                out_i = output_tensor[0, 0].cpu().numpy()
-                out_q = output_tensor[0, 1].cpu().numpy()
-                denoised_chunks.append(out_i + 1j*out_q)
-                
-        denoised_signal = np.concatenate(denoised_chunks)
-        return denoised_signal[:len(signal)] # Trim padding
+        plt.axhline(0, color='k', linewidth=0.5, alpha=0.3)
+        plt.axvline(0, color='k', linewidth=0.5, alpha=0.3)
+        plt.grid(True, alpha=0.3)
+        plt.xlabel('I (Real)')
+        plt.ylabel('Q (Imag)')
+        plt.title(title)
+        plt.legend()
+        plt.axis('equal')
+        plt.tight_layout()
+        plt.show()
 
 
 class PlutoTransmitter:

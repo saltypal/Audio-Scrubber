@@ -114,18 +114,18 @@ class fm_receiver(gr.top_block, Qt.QWidget):
                 self.soapy_rtlsdr_source_0.write_setting('biastee', bias)
         self.set_soapy_rtlsdr_source_0_bias = _set_soapy_rtlsdr_source_0_bias
 
-        self.soapy_rtlsdr_source_0 = soapy.source(dev, "fc32", 1, 'rtlsdr',
+        self.soapy_rtlsdr_source_0 = soapy.source(dev, "fc32", 1, 'driver=rtlsdr',
                                   stream_args, tune_args, settings)
 
         self._soapy_rtlsdr_source_0_setting_keys = [a.key for a in self.soapy_rtlsdr_source_0.get_setting_info()]
 
-        self.soapy_rtlsdr_source_0.set_sample_rate(0, 2000000)
-        self.soapy_rtlsdr_source_0.set_frequency(0, 98500000)
+        self.soapy_rtlsdr_source_0.set_sample_rate(0, samp_rate)
+        self.soapy_rtlsdr_source_0.set_frequency(0, 900e6)
         self.soapy_rtlsdr_source_0.set_frequency_correction(0, 0)
         self.set_soapy_rtlsdr_source_0_bias(bool(False))
-        self._soapy_rtlsdr_source_0_gain_value = 30
+        self._soapy_rtlsdr_source_0_gain_value = 20
         self.set_soapy_rtlsdr_source_0_gain_mode(0, bool(False))
-        self.set_soapy_rtlsdr_source_0_gain(0, 'TUNER', 30)
+        self.set_soapy_rtlsdr_source_0_gain(0, 'TUNER', 20)
         self._rfgain_range = qtgui.Range(10, 70, 5, 15, 20)
         self._rfgain_win = qtgui.RangeWidget(self._rfgain_range, self.set_rfgain, "RF Gain", "slider", int, QtCore.Qt.Horizontal)
         self.top_grid_layout.addWidget(self._rfgain_win, 0, 0, 1, 1)
@@ -134,7 +134,7 @@ class fm_receiver(gr.top_block, Qt.QWidget):
         for c in range(0, 1):
             self.top_grid_layout.setColumnStretch(c, 1)
         self.rational_resampler_xxx_0 = filter.rational_resampler_fff(
-                interpolation=48,
+                interpolation=24,
                 decimation=250,
                 taps=[],
                 fractional_bw=0)
@@ -238,7 +238,7 @@ class fm_receiver(gr.top_block, Qt.QWidget):
                 samp_rate,
                 100000,
                 10000,
-                window.WIN_HAMMING,
+                window.WIN_HANN,
                 6.76))
         self.blocks_multiply_const_vxx_0 = blocks.multiply_const_ff((volume/100))
         self.audio_sink_0 = audio.sink(24000, '', True)
@@ -288,8 +288,9 @@ class fm_receiver(gr.top_block, Qt.QWidget):
 
     def set_samp_rate(self, samp_rate):
         self.samp_rate = samp_rate
-        self.low_pass_filter_0.set_taps(firdes.low_pass(2, self.samp_rate, 100000, 10000, window.WIN_HAMMING, 6.76))
+        self.low_pass_filter_0.set_taps(firdes.low_pass(2, self.samp_rate, 100000, 10000, window.WIN_HANN, 6.76))
         self.qtgui_freq_sink_x_0.set_frequency_range(self.tuner, self.samp_rate)
+        self.soapy_rtlsdr_source_0.set_sample_rate(0, self.samp_rate)
 
     def get_rfgain(self):
         return self.rfgain
