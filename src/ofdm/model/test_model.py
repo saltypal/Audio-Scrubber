@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from src.ofdm.model.neuralnet import OFDM_UNet
 from src.ofdm.TxRx.sdr_hardware import SignalUtils
 
-def test_model(model_path="saved_models/OFDM/unet1d_best.pth", 
+def test_model(model_path="saved_models/OFDM/final_models/ofdm_1dunet.pth", 
                image_path="src/ofdm/TxRx/Transcorn/testfile_img.png"):
     """Test the trained model on real PNG file following Tx/Rx workflow."""
     
@@ -30,12 +30,24 @@ def test_model(model_path="saved_models/OFDM/unet1d_best.pth",
     if not Path(model_path).exists():
         print(f"\n❌ Model not found: {model_path}")
         print("\n💡 Train the model first:")
-        print("   python src/ofdm/model/backshot_ofdm.py")
+        print("   python src/ofdm/model/train_ofdm.py")
         return
     
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    # Load checkpoint (contains model_state_dict + metadata)
+    checkpoint = torch.load(model_path, map_location=device)
+    
+    # Extract just the model weights
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"✅ Loaded model from checkpoint: {model_path}")
+        print(f"   Epoch: {checkpoint.get('epoch', 'N/A')}")
+        print(f"   Best Val Loss: {checkpoint.get('best_val_loss', 'N/A'):.6f}")
+    else:
+        # Old format - direct state dict
+        model.load_state_dict(checkpoint)
+        print(f"✅ Loaded model: {model_path}")
+    
     model.eval()
-    print(f"✅ Loaded model: {model_path}")
     
     # === STEP 1: File → QPSK ===
     print(f"\n📁 Loading file: {image_path}")
@@ -45,7 +57,7 @@ def test_model(model_path="saved_models/OFDM/unet1d_best.pth",
     
     clean_signal, metadata = SignalUtils.file_to_qpsk(image_path)
     print(f"   ✅ Converted to QPSK: {len(clean_signal)} symbols")
-    print(f"   📝 Metadata: {metadata['filename']} ({metadata['filesize']} bytes)")
+    print(f"   📝 Metadata: {metadata['filename']} ({metadata['size']} bytes)")
     
     # === STEP 2: Add Noise (Simulate Rx) ===
     signal_power = np.mean(np.abs(clean_signal) ** 2)

@@ -1,5 +1,6 @@
 # Datasets (large files)
 dataset/
+data/raw/*.iq
 
 # Old archived files
 Archived/
@@ -12,6 +13,10 @@ __pycache__/
 .Python
 
 # Model checkpoints and outputs
+output/**/*.png
+output/**/*.wav
+results/**/*.png
+saved_models/**/checkpoint_*.pth
 
 # IDE
 .vscode/

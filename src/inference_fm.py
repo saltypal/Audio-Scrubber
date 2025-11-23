@@ -8,7 +8,7 @@ from pathlib import Path
 
 # Add parent directory to path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import Paths, AudioSettings
+from config.config import Paths, AudioSettings
 from src.fm.model.neuralnet import UNet1D
 
 MODEL_PATH = str(Paths.MODEL_FM_BEST)

@@ -1,0 +1,5 @@
+Hello! This is a test of OFDM text transmission with AI denoising.
+The quick brown fox jumps over the lazy dog.
+Testing special characters: @#$%^&*()_+-=[]{}|;:',.<>?
+Numbers: 0123456789
+Unicode: café, naïve, résumé 🚀

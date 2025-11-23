@@ -86,6 +86,49 @@ def visualize_images(original_path, noisy_path=None, denoised_path=None, save_pa
     else:
         plt.show()
 
+def select_ofdm_model():
+    """Interactive model selection for OFDM denoising."""
+    model_dir = Path('saved_models/OFDM/final_models')
+    
+    if not model_dir.exists():
+        print(f"⚠️  Model directory not found: {model_dir}")
+        print("   Using default: saved_models/OFDM/unet1d_best.pth")
+        return 'saved_models/OFDM/unet1d_best.pth'
+    
+    # Find all .pth files
+    models = sorted(model_dir.glob('*.pth'))
+    
+    if not models:
+        print(f"⚠️  No models found in {model_dir}")
+        print("   Using default: saved_models/OFDM/unet1d_best.pth")
+        return 'saved_models/OFDM/unet1d_best.pth'
+    
+    print("\n" + "="*60)
+    print("🧠 SELECT OFDM DENOISING MODEL")
+    print("="*60)
+    
+    for i, model_path in enumerate(models, 1):
+        print(f"  [{i}] {model_path.name}")
+    
+    print("\n  [0] Use default (saved_models/OFDM/unet1d_best.pth)")
+    
+    while True:
+        try:
+            choice = input("\nEnter your choice (0-{}): ".format(len(models)))
+            choice = int(choice)
+            
+            if choice == 0:
+                return 'saved_models/OFDM/unet1d_best.pth'
+            elif 1 <= choice <= len(models):
+                selected = str(models[choice - 1])
+                print(f"✅ Selected: {selected}")
+                return selected
+            else:
+                print("❌ Invalid choice. Try again.")
+        except (ValueError, KeyboardInterrupt):
+            print("\n⚠️  Using default model")
+            return 'saved_models/OFDM/unet1d_best.pth'
+
 # --- DEFAULT CONFIGURATION (Modify as needed) ---
 CONFIG = {
     'CENTER_FREQ': 915e6,
@@ -119,6 +162,11 @@ def main():
     parser.add_argument('--save', type=str, help='Output file/directory for received data')
     
     args = parser.parse_args()
+
+    # If denoising is requested, let user select model
+    if args.denoise:
+        selected_model = select_ofdm_model()
+        args.model = selected_model
 
     # Update Global Params from Args
     SDR_PARAMS['CENTER_FREQ'] = args.freq
@@ -234,47 +282,52 @@ def main():
                 print(f"   Saved: {rx_plot_path}")
                 
                 if args.denoise:
-                    # Save noisy version first (qpsk_to_file expects directory)
+                    # Try to save noisy version first (qpsk_to_file expects directory)
                     noisy_dir = output_dir / 'noisy'
                     noisy_dir.mkdir(parents=True, exist_ok=True)
-                    success = SignalUtils.qpsk_to_file(data, str(noisy_dir))
+                    noisy_success = SignalUtils.qpsk_to_file(data, str(noisy_dir))
                     
-                    if success:
+                    noisy_file = None
+                    if noisy_success:
                         # Find the reconstructed file
                         noisy_files = list(noisy_dir.glob('*'))
                         if noisy_files:
                             noisy_file = noisy_files[0]
                             print(f"\n💾 Saved noisy: {noisy_file}")
-                            
-                            # Denoise
-                            print("\n🧠 Applying AI denoising...")
-                            clean_data = SignalUtils.denoise_signal(data, args.model)
-                            
-                            # Save denoised version
-                            denoised_dir = output_dir / 'denoised'
-                            denoised_dir.mkdir(parents=True, exist_ok=True)
-                            success_denoised = SignalUtils.qpsk_to_file(clean_data, str(denoised_dir))
-                            
-                            if success_denoised:
-                                denoised_files = list(denoised_dir.glob('*'))
-                                if denoised_files:
-                                    denoised_file = denoised_files[0]
-                                    print(f"💾 Saved denoised: {denoised_file}")
-                                    
-                                    # Save 3-image comparison: Original, Noisy, Denoised
-                                    comparison_plot = plot_dir / 'image_comparison.png'
-                                    if args.mode == 'loopback' and original_file:
-                                        print("\n🖼️  Saving comparison: Original → Noisy → Denoised")
-                                        visualize_images(original_file, noisy_file, denoised_file, save_path=comparison_plot)
-                                    else:
-                                        print("\n🖼️  Saving comparison: Noisy → Denoised")
-                                        visualize_images(noisy_file, noisy_file, denoised_file, save_path=comparison_plot)
-                            else:
-                                print("⚠️  Denoised file reconstruction failed")
                         else:
                             print("⚠️  No noisy file found after reconstruction")
                     else:
-                        print("⚠️  Noisy file reconstruction failed - data may be corrupted")
+                        print("⚠️  Noisy file reconstruction failed - continuing with denoising anyway...")
+                    
+                    # Denoise regardless of noisy reconstruction status
+                    print("\n🧠 Applying AI denoising...")
+                    clean_data = SignalUtils.denoise_signal(data, args.model)
+                    
+                    # Save denoised version
+                    denoised_dir = output_dir / 'denoised'
+                    denoised_dir.mkdir(parents=True, exist_ok=True)
+                    denoised_success = SignalUtils.qpsk_to_file(clean_data, str(denoised_dir))
+                    
+                    denoised_file = None
+                    if denoised_success:
+                        denoised_files = list(denoised_dir.glob('*'))
+                        if denoised_files:
+                            denoised_file = denoised_files[0]
+                            print(f"💾 Saved denoised: {denoised_file}")
+                        else:
+                            print("⚠️  No denoised file found after reconstruction")
+                    else:
+                        print("⚠️  Denoised file reconstruction failed")
+                    
+                    # Save comparison plot if we have at least the denoised file
+                    if denoised_file or noisy_file:
+                        comparison_plot = plot_dir / 'image_comparison.png'
+                        if args.mode == 'loopback' and original_file:
+                            print("\n🖼️  Saving comparison: Original → Noisy → Denoised")
+                            visualize_images(original_file, noisy_file, denoised_file, save_path=comparison_plot)
+                        elif noisy_file and denoised_file:
+                            print("\n🖼️  Saving comparison: Noisy → Denoised")
+                            visualize_images(noisy_file, noisy_file, denoised_file, save_path=comparison_plot)
                 else:
                     # No denoising - just save received
                     received_dir = output_dir / 'received'

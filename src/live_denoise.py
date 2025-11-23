@@ -13,6 +13,57 @@ import librosa.display
 from collections import deque
 from datetime import datetime
 
+def select_fm_model():
+    """Interactive model selection for FM denoising."""
+    model_dir = Path('saved_models/FM/FM_Final_1DUNET')
+    
+    if not model_dir.exists():
+        print(f"⚠️  Model directory not found: {model_dir}")
+        default_model = str(Paths.MODEL_FM_BEST)
+        print(f"   Using default: {default_model}")
+        return default_model
+    
+    # Find all .pth files
+    models = sorted(model_dir.glob('*.pth'))
+    
+    if not models:
+        print(f"⚠️  No models found in {model_dir}")
+        default_model = str(Paths.MODEL_FM_BEST)
+        print(f"   Using default: {default_model}")
+        return default_model
+    
+    print("\n" + "="*60)
+    print("🧠 SELECT FM DENOISING MODEL")
+    print("="*60)
+    print("\nAvailable models:")
+    
+    for i, model_path in enumerate(models, 1):
+        model_name = model_path.stem
+        if 'general' in model_name.lower():
+            desc = "(All-purpose denoising)"
+        elif 'music' in model_name.lower():
+            desc = "(Optimized for music/FM radio)"
+        elif 'speech' in model_name.lower():
+            desc = "(Optimized for voice/talk radio)"
+        else:
+            desc = ""
+        print(f"  [{i}] {model_path.name} {desc}")
+    
+    while True:
+        try:
+            choice = input(f"\nEnter your choice (1-{len(models)}): ")
+            choice = int(choice)
+            
+            if 1 <= choice <= len(models):
+                selected = str(models[choice - 1])
+                print(f"✅ Selected: {selected}")
+                return selected
+            else:
+                print("❌ Invalid choice. Try again.")
+        except (ValueError, KeyboardInterrupt):
+            print("\n⚠️  Using default model (music)")
+            return str(Paths.MODEL_FM_BEST)
+
 # Add parent directory to path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import Paths, AudioSettings
@@ -330,36 +381,48 @@ class LiveSDRDenoiser:
         self.ai_thread = Thread(target=self._ai_worker, daemon=True)
         self.ai_thread.start()
         
-        # --- Live Plot Setup ---
-        print("📊 Initializing Live Plot...")
-        plt.ion()
-        fig, (ax_wave, ax_spec) = plt.subplots(2, 1, figsize=(10, 8))
-        fig.canvas.manager.set_window_title("Live SDR Audio Monitor")
-        
-        # Waveform
-        x = np.arange(self.chunk_size)
-        line_noisy, = ax_wave.plot(x, np.zeros(self.chunk_size), color='orange', alpha=0.6, label='Noisy Input')
-        line_clean, = ax_wave.plot(x, np.zeros(self.chunk_size), color='blue', alpha=0.8, label='Clean Output')
-        ax_wave.set_ylim(-0.5, 0.5) 
-        ax_wave.set_title("Real-time Waveform")
-        ax_wave.legend(loc='upper right')
-        ax_wave.grid(True, alpha=0.3)
-        
-        # Spectrum
-        ax_spec.set_title("Real-time Frequency Spectrum")
-        ax_spec.set_xlabel("Frequency (Hz)")
-        ax_spec.set_ylabel("Magnitude (dB)")
-        ax_spec.set_xlim(0, self.sample_rate // 2)
-        ax_spec.set_ylim(-100, 0)
-        ax_spec.grid(True, alpha=0.3)
-        
-        freqs = np.fft.rfftfreq(self.chunk_size, 1/self.sample_rate)
-        line_spec_noisy, = ax_spec.plot(freqs, np.zeros_like(freqs), color='orange', alpha=0.6, label='Noisy')
-        line_spec_clean, = ax_spec.plot(freqs, np.zeros_like(freqs), color='blue', alpha=0.8, label='Clean')
-        ax_spec.legend(loc='upper right')
-        
-        plt.tight_layout()
+        # --- Live Plot Setup (DISABLED) ---
+        # print("📊 Initializing Live Plot...")
+        # plt.ion()
+        # fig, (ax_wave, ax_spec) = plt.subplots(2, 1, figsize=(10, 8))
+        # fig.canvas.manager.set_window_title("Live SDR Audio Monitor")
+        # 
+        # # Waveform
+        # x = np.arange(self.chunk_size)
+        # line_noisy, = ax_wave.plot(x, np.zeros(self.chunk_size), color='orange', alpha=0.6, label='Noisy Input')
+        # line_clean, = ax_wave.plot(x, np.zeros(self.chunk_size), color='blue', alpha=0.8, label='Clean Output')
+        # ax_wave.set_ylim(-0.5, 0.5) 
+        # ax_wave.set_title("Real-time Waveform")
+        # ax_wave.legend(loc='upper right')
+        # ax_wave.grid(True, alpha=0.3)
+        # 
+        # # Spectrum
+        # ax_spec.set_title("Real-time Frequency Spectrum")
+        # ax_spec.set_xlabel("Frequency (Hz)")
+        # ax_spec.set_ylabel("Magnitude (dB)")
+        # ax_spec.set_xlim(0, self.sample_rate // 2)
+        # ax_spec.set_ylim(-100, 0)
+        # ax_spec.grid(True, alpha=0.3)
+        # 
+        # freqs = np.fft.rfftfreq(self.chunk_size, 1/self.sample_rate)
+        # line_spec_noisy, = ax_spec.plot(freqs, np.zeros_like(freqs), color='orange', alpha=0.6, label='Noisy')
+        # line_spec_clean, = ax_spec.plot(freqs, np.zeros_like(freqs), color='blue', alpha=0.8, label='Clean')
+        # ax_spec.legend(loc='upper right')
+        # 
+        # plt.tight_layout()
         # -----------------------
+        
+        # Get device info to check sample rate compatibility
+        devices = sd.query_devices()
+        input_info = devices[input_device_id]
+        output_info = devices[output_device_id] if output_device_id else devices[sd.default.device[1]]
+        
+        print(f"\n🔧 Device Configuration:")
+        print(f"   Input:  {input_info['name']}")
+        print(f"          Default SR: {input_info['default_samplerate']} Hz")
+        print(f"   Output: {output_info['name']}")
+        print(f"          Default SR: {output_info['default_samplerate']} Hz")
+        print(f"   Using:  {self.sample_rate} Hz\n")
         
         try:
             with sd.Stream(
@@ -368,46 +431,25 @@ class LiveSDRDenoiser:
                 blocksize=self.chunk_size,
                 channels=1,
                 dtype='float32',
-                callback=self._audio_callback
+                callback=self._audio_callback,
+                prime_output_buffers_using_stream_callback=True
             ):
                 print(f"\n✅ Audio stream active!")
                 print(f"   Input:  Device #{input_device_id} ('{self.input_device_name}')")
                 print(f"   Output: Device #{output_device_id if output_device_id else 'Default'}")
                 print(f"   Mode:   {'PASSTHROUGH (No AI)' if self.passthrough else 'DENOISING (AI Active)'}")
-                print(f"   Listening for audio... (Check the plot window)\n")
+                print(f"   Listening for audio... Press Ctrl+C to stop.\n")
                 
                 while self.running.is_set():
-                    # Update Plot Loop
-                    if self.input_history and self.output_history:
-                        try:
-                            # Get latest chunks
-                            noisy = self.input_history[-1]
-                            clean = self.output_history[-1]
-                            
-                            # Update Waveform
-                            line_noisy.set_ydata(noisy)
-                            line_clean.set_ydata(clean)
-                            
-                            # Update Spectrum
-                            fft_noisy = 20 * np.log10(np.abs(np.fft.rfft(noisy)) + 1e-9)
-                            fft_clean = 20 * np.log10(np.abs(np.fft.rfft(clean)) + 1e-9)
-                            
-                            line_spec_noisy.set_ydata(fft_noisy)
-                            line_spec_clean.set_ydata(fft_clean)
-                            
-                            fig.canvas.draw_idle()
-                            fig.canvas.flush_events()
-                        except Exception as e:
-                            pass # Ignore plot errors to keep audio running
-                            
-                    time.sleep(0.1) # 10 FPS
+                    time.sleep(0.1)  # Just wait, no plot updates
+                    # Live plot disabled - audio still processing in background
         
         except KeyboardInterrupt:
             print("\n\n⏹️  Stopping...")
         except Exception as e:
             print(f"\n❌ An error occurred: {e}")
         finally:
-            plt.close('all')
+            # plt.close('all')  # Disabled since no plot
             self.stop()
     
     def stop(self):
@@ -433,7 +475,7 @@ def main():
     parser.add_argument('--list-devices', action='store_true', help='List all available audio devices and exit.')
     parser.add_argument('--passthrough', action='store_true', help='Bypass AI and pass audio directly through to test routing.')
     parser.add_argument('--input-device', type=str, default='CABLE Output', help='Name of the VB-CABLE input device.')
-    parser.add_argument('--output-device', type=str, default=None, help='Name of the output speaker device (optional).')
+    parser.add_argument('--output-device', type=str, default=None, help='Name of the output speaker device. Set to your preferred speaker name or leave None for system default.')
     parser.add_argument('--model', type=str, default=str(Paths.MODEL_FM_BEST), help='Path to the trained model.')
     parser.add_argument('--chunk-size', type=int, default=8192, help='Audio chunk size.')
     parser.add_argument('--cpu', action='store_true', help='Force CPU processing.')
@@ -448,6 +490,11 @@ def main():
         print("Check the 'name' of your VB-CABLE (e.g., 'CABLE Output') and your speakers.")
         print("Use these names with --input-device and --output-device if needed.")
         return
+
+    # Interactive model selection (unless passthrough mode)
+    if not args.passthrough:
+        selected_model = select_fm_model()
+        args.model = selected_model
 
     device = 'cpu' if args.cpu else ('cuda' if torch.cuda.is_available() else 'cpu')
     

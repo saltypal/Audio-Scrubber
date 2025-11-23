@@ -42,7 +42,7 @@ import matplotlib.pyplot as plt
 # Add project root (where config_music.py lives) to path
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(PROJECT_ROOT))
-from config_music import Paths, AudioSettings, TrainingConfig, NoiseSettings
+from config.config_music import Paths, AudioSettings, TrainingConfig, NoiseSettings
 
 
 class MusicConfig:
