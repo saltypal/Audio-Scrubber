@@ -1,51 +1,36 @@
 """
-================================================================================
-MAIN INFERENCE SCRIPT - Adalm Pluto TX + RTL-SDR RX with AI Denoising
-================================================================================
+MAIN INFERENCE SCRIPT - Adalm Pluto TX + RTL-SDR RX with AI Denoising (FM only)
 
 Usage:
-    python main_inference.py --mode ofdm --data <file_path>
-    python main_inference.py --mode fm --audio <audio_file>
-    python main_inference.py --mode ofdm --passthrough --data <file>
+    python main_inference.py --audio <audio_file> [--fm-mode <mode>] [--fm-architecture <arch>]
+    python main_inference.py --passthrough --audio <audio_file>
 """
 
-import argparse
-from pathlib import Path
 import sys
 import time
 import numpy as np
+import argparse
+from pathlib import Path
 
 # Add parent directories to path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from inference.TxRx.sdr_base import PlutoSDR, PlutoRX, RTLSDR, SDR_CONFIG, FM_CONFIG
-from inference.TxRx.ofdm_modulation import OFDM_Modulation
 from inference.TxRx.fm_modulation import FM_Modulation
 from inference.TxRx.sdr_utils import SDRUtils
 
 
 def main():
-    parser = argparse.ArgumentParser(description='SDR TX/RX with AI Denoising')
-    parser.add_argument('--mode', type=str, required=True, choices=['ofdm', 'fm'],
-                       help='Modulation mode: ofdm or fm')
-    parser.add_argument('--data', type=str, help='Data file to transmit (for OFDM)')
-    parser.add_argument('--audio', type=str, help='Audio file to transmit (for FM)')
+    parser = argparse.ArgumentParser(description='SDR TX/RX with AI Denoising (FM)')
+    parser.add_argument('--audio', type=str, required=True, help='Audio file to transmit')
     parser.add_argument('--model', type=str, help='Path to model (optional, auto-detected)')
     parser.add_argument('--passthrough', action='store_true',
                        help='Disable AI denoising (raw modulation only)')
-    parser.add_argument('--rx-duration', type=float, default=0.1,
-                       help='RX capture duration in seconds (default: 0.1s for quick OFDM tests, use 5.0 for 1-sec tests)')
-    parser.add_argument('--freq', type=float, help='Center frequency in MHz (default: 915)')
+    parser.add_argument('--rx-duration', type=float, default=5.0,
+                       help='RX capture duration in seconds (default: 5.0)')
+    parser.add_argument('--freq', type=float, help='Center frequency in MHz (default: 105)')
     parser.add_argument('--tx-gain', type=int, help='TX gain in dB (default: -10)')
-    parser.add_argument('--buffer-frames', type=int, default=0,
-                       help='Number of random warm-up frames before payload (default: 0)')
-    parser.add_argument('--modulation', type=str, default='qpsk', choices=['qpsk', '16qam'],
-                       help='OFDM modulation scheme: qpsk (2 bits/symbol) or 16qam (4 bits/symbol) (default: qpsk)')
-    parser.add_argument('--rx-device', type=str, default='rtl', choices=['rtl', 'pluto'],
-                       help='RX device for OFDM: rtl (RTL-SDR) or pluto (Adalm Pluto) (default: rtl)')
-    parser.add_argument('--output', type=str, help='Output file for received data')
-    parser.add_argument('--random-bytes', type=int, default=0,
-                       help='Send N random bytes instead of file (default: 0, means use --data file)')
+    parser.add_argument('--output', type=str, help='Output file for received audio')
     
     # FM specific
     parser.add_argument('--fm-mode', type=str, default='general',
@@ -57,19 +42,9 @@ def main():
     
     args = parser.parse_args()
     
-    # Validate inputs
-    if args.mode == 'ofdm' and not args.data and args.random_bytes == 0:
-        print("❌ --data required for OFDM mode (or use --random-bytes)")
-        return
-    
-    if args.mode == 'fm' and not args.audio:
-        print("❌ --audio required for FM mode")
-        return
-    
     print("="*80)
-    print("SDR INFERENCE WITH AI DENOISING")
+    print("FM SDR INFERENCE WITH AI DENOISING")
     print("="*80)
-    print(f"Mode: {args.mode.upper()}")
     print(f"AI Denoising: {'Disabled (Passthrough)' if args.passthrough else 'Enabled'}")
     print("="*80)
     
@@ -78,14 +53,8 @@ def main():
     print("-" * 80)
     
     pluto = PlutoSDR()
-    
-    # Initialize RX device based on user selection
-    if args.mode == 'ofdm' and args.rx_device == 'pluto':
-        rx_sdr = PlutoRX()
-        rx_device_name = "Adalm Pluto RX"
-    else:
-        rx_sdr = RTLSDR()
-        rx_device_name = "RTL-SDR RX"
+    rx_sdr = RTLSDR()
+    rx_device_name = "RTL-SDR RX"
     
     if not pluto.check_device():
         print("❌ TX Pluto not available. Aborting.")
@@ -95,96 +64,64 @@ def main():
         print(f"❌ {rx_device_name} not available. Aborting.")
         return
     
-    # Configure hardware
-    if args.mode == 'fm':
-        # Use FM radio frequency (105 MHz)
-        config = FM_CONFIG
-        freq = (args.freq * 1e6) if args.freq else config['center_freq']
-    else:
-        # Use ISM band for OFDM (915 MHz)
-        config = SDR_CONFIG
-        freq = (args.freq * 1e6) if args.freq else config['center_freq']
-    
+    # Configure hardware for FM
+    config = FM_CONFIG
+    freq = (args.freq * 1e6) if args.freq else config['center_freq']
     tx_gain = args.tx_gain if args.tx_gain is not None else config['tx_gain']
     
     pluto.configure(freq=freq, gain=tx_gain)
     rx_sdr.configure(freq=freq)
     
-    print(f"📻 Frequency: {freq/1e6:.3f} MHz ({args.mode.upper()} mode)")
+    print(f"📻 Frequency: {freq/1e6:.3f} MHz (FM mode)")
     print(f"📡 TX Gain: {tx_gain} dB")
     print(f"📥 RX Device: {rx_device_name}")
     
     # ========== STEP 2: Initialize Modulation ==========
-    print("\n🔧 STEP 2: Initialize Modulation")
+    print("\n🔧 STEP 2: Initialize FM Modulation")
     print("-" * 80)
     
-    if args.mode == 'ofdm':
-        modulation = OFDM_Modulation(
-            use_ai=not args.passthrough,
-            model_path=args.model,
-            passthrough=args.passthrough,
-            use_enhanced_fec=True,  # Enable enhanced FEC by default
-            modulation=args.modulation  # Pass modulation scheme
-        )
-        data_path = args.data
-    else:  # FM
-        modulation = FM_Modulation(
-            use_ai=not args.passthrough,
-            model_path=args.model,
-            passthrough=args.passthrough,
-            mode=args.fm_mode,
-            architecture=args.fm_architecture
-        )
-        data_path = args.audio
+    modulation = FM_Modulation(
+        use_ai=not args.passthrough,
+        model_path=args.model,
+        passthrough=args.passthrough,
+        mode=args.fm_mode,
+        architecture=args.fm_architecture
+    )
+    data_path = args.audio
     
-    # ========== STEP 3: Load and Modulate Data ==========
-    print("\n📦 STEP 3: Load and Modulate Data")
+    # ========== STEP 3: Load and Modulate Audio ==========
+    print("\n📦 STEP 3: Load and Modulate Audio")
     print("-" * 80)
     
-    if args.mode == 'ofdm':
-        # Load or generate data
-        if args.random_bytes > 0:
-            # Generate random data
-            data_bytes = np.random.bytes(args.random_bytes)
-            data_path = f"<random {args.random_bytes} bytes>"
-            print(f"🎲 Generated {args.random_bytes} random bytes")
-        else:
-            # Load data file
-            data_bytes = SDRUtils.load_data(data_path)
+    # Check if real-time streaming mode (file input)
+    if isinstance(data_path, str) and Path(data_path).exists():
+        print("🎵 Using REAL-TIME streaming mode for FM")
+        # Get generator for streaming
+        tx_stream = modulation.modulate(data_path, realtime=True, chunk_size=44100)
+        tx_waveform = None  # Will be streamed
+    else:
+        # Load audio and modulate
+        tx_waveform = modulation.modulate(data_path)
         
-        # Modulate (pass image path for visualization and buffer frames)
-        tx_waveform = modulation.modulate(data_bytes, image_path=data_path if args.random_bytes == 0 else None, buffer_frames=args.buffer_frames)
-    else:  # FM
-        # Check if real-time streaming mode (file input)
-        if isinstance(data_path, str) and Path(data_path).exists():
-            print("🎵 Using REAL-TIME streaming mode for FM")
-            # Get generator for streaming
-            tx_stream = modulation.modulate(data_path, realtime=True, chunk_size=44100)
-            tx_waveform = None  # Will be streamed
-        else:
-            # Load audio and modulate
-            tx_waveform = modulation.modulate(data_path)
-            
-            # Check if modulation failed
-            if tx_waveform is None:
-                print("❌ Modulation failed. Check audio file path.")
-                pluto.stop()
-                rx_sdr.stop()
-                return
+        # Check if modulation failed
+        if tx_waveform is None:
+            print("❌ Modulation failed. Check audio file path.")
+            pluto.stop()
+            rx_sdr.stop()
+            return
     
     # ========== STEP 4: Transmit ==========
     print("\n📤 STEP 4: Start Transmission")
     print("-" * 80)
     
     # Check if FM real-time streaming
-    if args.mode == 'fm' and tx_waveform is None:
+    if tx_waveform is None:
         # Real-time streaming mode - continuous TX and RX with playback
         print("🔴 LIVE FM TRANSMISSION (Real-time with Audio Playback)")
         print("   Press Ctrl+C to stop...")
         
         import sounddevice as sd
         import matplotlib.pyplot as plt
-        from matplotlib.animation import FuncAnimation
         
         # Audio buffer for playback
         audio_buffer = []
@@ -338,75 +275,35 @@ def main():
     print("\n🔄 STEP 6: Demodulate and Denoise")
     print("-" * 80)
     
-    # SQUELCH: Crop to signal before demodulation to prevent BER corruption
-    print("🔍 Applying signal detection (squelch)...")
-    # Use first 5000 samples - enough to capture TX burst without noise
-    rx_waveform_cropped = rx_waveform[:5000]
-    print(f"✂️  SQUELCH: Taking first 5000 samples (from {len(rx_waveform):,} total)")
-    
-    result = modulation.demodulate(rx_waveform_cropped)
-    
-    # For OFDM: Show constellation comparison
-    if args.mode == 'ofdm' and not args.passthrough:
-        print("\n📊 OFDM Constellation Analysis:")
-        print("   ✓ Constellation plots saved (before/after AI denoising)")
-        print("   📍 Before: Orange points (noisy RX)")
-        print("   📍 After: Blue points (AI denoised)")
-        print("   ✓ Plots: src/inference/plot/OFDM_Comparison_*.png")
+    result = modulation.demodulate(rx_waveform)
     
     # ========== STEP 7: Save Results ==========
     print("\n💾 STEP 7: Save Results")
     print("-" * 80)
     
-    if args.mode == 'ofdm':
-        # Save decoded data
-        if result['data'] is not None:
-            output_path = args.output or 'output_decoded.bin'
-            SDRUtils.save_data(result['data'], output_path)
-            
-            # Compare with original
-            if data_bytes:
-                match_len = min(len(data_bytes), len(result['data']))
-                errors = np.sum(np.frombuffer(data_bytes[:match_len], dtype=np.uint8) != 
-                               np.frombuffer(result['data'][:match_len], dtype=np.uint8))
-                accuracy = 100 * (1 - errors / match_len)
-                print(f"📊 Data Accuracy: {accuracy:.2f}% ({errors}/{match_len} byte errors)")
-            
-            # Show detailed stats from demodulation
-            if result.get('stats'):
-                stats = result['stats']
-                print(f"\n📈 DETAILED STATISTICS:")
-                print(f"   Pre-FEC Bit Error Rate: {stats.get('ber', 0):.4f} ({stats.get('bit_errors', 0)} errors/{stats.get('total_bits', 0)} bits)")
-                print(f"   Payload Accuracy: {stats.get('payload_accuracy', 100):.1f}%")
-                if stats.get('note'):
-                    print(f"   Note: {stats['note']}")
-        else:
-            print("⚠️  No data decoded")
-    
-    else:  # FM
-        # Save denoised audio
-        if result['audio'] is not None:
-            from scipy.io import wavfile
-            output_path = args.output or 'output_audio.wav'
-            
-            # Convert to int16
-            audio_int16 = (result['audio'] * 32767).astype(np.int16)
-            wavfile.write(output_path, modulation.audio_rate, audio_int16)
-            print(f"💾 Saved audio: {output_path}")
-            
-            # Play the audio
-            print(f"\n🔊 Playing denoised audio...")
-            try:
-                import sounddevice as sd
-                sd.play(result['audio'], modulation.audio_rate)
-                print(f"   Playing {len(result['audio'])/modulation.audio_rate:.1f} seconds...")
-                sd.wait()  # Wait until playback is finished
-                print("✅ Playback complete")
-            except Exception as e:
-                print(f"⚠️  Playback failed: {e}")
-                print(f"   (Audio saved to {output_path})")
-        else:
-            print("⚠️  No audio to play")
+    # Save denoised audio
+    if result['audio'] is not None:
+        from scipy.io import wavfile
+        output_path = args.output or 'output_audio.wav'
+        
+        # Convert to int16
+        audio_int16 = (result['audio'] * 32767).astype(np.int16)
+        wavfile.write(output_path, modulation.audio_rate, audio_int16)
+        print(f"💾 Saved audio: {output_path}")
+        
+        # Play the audio
+        print(f"\n🔊 Playing denoised audio...")
+        try:
+            import sounddevice as sd
+            sd.play(result['audio'], modulation.audio_rate)
+            print(f"   Playing {len(result['audio'])/modulation.audio_rate:.1f} seconds...")
+            sd.wait()  # Wait until playback is finished
+            print("✅ Playback complete")
+        except Exception as e:
+            print(f"⚠️  Playback failed: {e}")
+            print(f"   (Audio saved to {output_path})")
+    else:
+        print("⚠️  No audio to play")
     
     # ========== STEP 8: Cleanup ==========
     print("\n🧹 STEP 8: Cleanup")
@@ -416,11 +313,11 @@ def main():
     rx_sdr.stop()
     
     print("\n" + "="*80)
-    print("✅ INFERENCE COMPLETE")
+    print("✅ FM INFERENCE COMPLETE")
     print("="*80)
     print(f"📂 Plots saved in: src/inference/plot/")
-    if args.output or (args.mode == 'ofdm'):
-        print(f"📂 Output saved in: {output_path if 'output_path' in locals() else 'N/A'}")
+    if args.output:
+        print(f"📂 Output saved in: {args.output}")
     print("="*80)
 
 

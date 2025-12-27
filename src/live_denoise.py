@@ -138,6 +138,8 @@ class LiveSDRDenoiser:
         # Queues
         self.in_queue = Queue(maxsize=20)
         self.out_queue = Queue(maxsize=20)
+        # Last output chunk used as fallback to avoid gaps
+        self._last_output = np.zeros(self.chunk_size, dtype=np.float32)
         
         # Control flags
         self.running = Event()
@@ -277,35 +279,43 @@ class LiveSDRDenoiser:
 
         # Denoising mode
         print(f"✅ DENOISING MODE ACTIVE - Audio will be processed through AI model")
-        overlap = self.chunk_size // 2
-        buffer = np.zeros(self.chunk_size + overlap, dtype=np.float32)
+        # Simpler chunk processing: process one audio block at a time (no overlap)
+        # This reduces complexity and avoids mismatched overlap artifacts that can
+        # introduce gaps. If you want overlap-add later, we can implement a
+        # proper OLA buffer with hop-size = chunk_size//2.
         processed_count = 0
-        
+
         with torch.no_grad():
             while self.running.is_set():
                 if not self.in_queue.empty():
                     noisy_chunk = self.in_queue.get()
                     processed_count += 1
-                    
-                    # Add new chunk to buffer
-                    buffer[:-self.chunk_size] = buffer[self.chunk_size:]
-                    buffer[-self.chunk_size:] = noisy_chunk
-                    
-                    # Process the full buffer
-                    noisy_tensor = torch.from_numpy(buffer).unsqueeze(0).unsqueeze(0).to(self.device)
+
+                    # Prepare tensor for model: shape (1,1,L)
+                    noisy_tensor = torch.from_numpy(noisy_chunk.astype(np.float32)).unsqueeze(0).unsqueeze(0).to(self.device)
                     clean_tensor = self.model(noisy_tensor)
-                    clean_buffer = clean_tensor.squeeze().cpu().numpy()
-                    
-                    # Output only the first part of the processed buffer to avoid overlap artifacts
-                    output_chunk = clean_buffer[:self.chunk_size]
-                    
+                    clean_chunk = clean_tensor.squeeze().cpu().numpy()
+
+                    # Ensure length matches expected chunk size
+                    if clean_chunk.shape[0] != self.chunk_size:
+                        # If model returns different length, trim or pad
+                        if clean_chunk.shape[0] > self.chunk_size:
+                            output_chunk = clean_chunk[:self.chunk_size]
+                        else:
+                            output_chunk = np.pad(clean_chunk, (0, self.chunk_size - clean_chunk.shape[0]))
+                    else:
+                        output_chunk = clean_chunk
+
                     # Record history
                     self.input_history.append(noisy_chunk)
                     self.output_history.append(output_chunk)
-                    
-                    if not self.out_queue.full():
-                        self.out_queue.put(output_chunk)
-                    else:
+
+                    # Put into out queue for audio callback to consume
+                    try:
+                        self.out_queue.put_nowait(output_chunk)
+                        self._last_output = output_chunk
+                    except Exception:
+                        # If queue is full, drop the chunk but keep last output
                         print(f"⚠️ Output queue full! Denoised chunk #{processed_count} dropped.")
         
         print(f"\n🤖 AI thread stopped (Denoising). Processed {processed_count} chunks.")
@@ -328,12 +338,14 @@ class LiveSDRDenoiser:
         if not self.out_queue.empty():
             clean_chunk = self.out_queue.get()
             outdata[:, 0] = clean_chunk
+            self._last_output = clean_chunk
             output_volume = np.abs(clean_chunk).max()
             print(f"🔊 IN: {input_volume:.4f} | OUT: {output_volume:.4f} | Q(in): {self.in_queue.qsize()} | Q(out): {self.out_queue.qsize()}")
         else:
-            outdata.fill(0)  # Output silence if queue is empty
+            # Fallback: reuse last output chunk to avoid gaps (helps when AI jitter occurs)
+            outdata[:, 0] = self._last_output
             if input_volume > 0:
-                print(f"⏳ Waiting for processing... IN: {input_volume:.4f} | Q(in): {self.in_queue.qsize()} | Q(out): {self.out_queue.qsize()}")
+                print(f"⏳ Using last output (fallback). IN: {input_volume:.4f} | Q(in): {self.in_queue.qsize()} | Q(out): {self.out_queue.qsize()}")
     
     def start(self):
         """Start the live denoising stream."""

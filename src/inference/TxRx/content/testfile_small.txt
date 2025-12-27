@@ -1,3 +1,0 @@
-Test File
-This is a small test file for OFDM transmission.
-It is intentionally short so it can be transmitted reliably.

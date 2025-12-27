@@ -23,7 +23,7 @@ except ImportError:
     RtlSdr = None
 
 
-# Shared configuration dictionary for OFDM (ISM band)
+# Shared configuration dictionary (ISM band)
 SDR_CONFIG = {
     'center_freq': 915e6,      # 915 MHz ISM band
     'sample_rate': 2e6,        # 2 MSPS

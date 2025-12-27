@@ -367,7 +367,8 @@ class SDRUtils:
         print(f"✂️  SQUELCH (Burst Detection):")
         print(f"   Noise floor: {10*np.log10(noise_floor):.2f} dB")
         print(f"   Burst region: Samples {start:,} to {end:,}")
-        print(f"   Duration: {duration_ms:.2f} ms ({num_symbols} OFDM symbols)")
+        print(f"   Duration: {duration_ms:.2f} ms ({num_symbols} symbols)")
         
         return waveform[start:end]
+
 
