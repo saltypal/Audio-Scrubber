@@ -1,0 +1,124 @@
+% AudioScrubber FM Denoising — Overleaf-ready LaTeX
+% Keep ASCII only; fill in results/tables as available.
+
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{cite}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{siunitx}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=black,citecolor=black,urlcolor=blue}
+
+	title{FM Radio Denoising Using Deep Learning Techniques}
+
+\author{
+\IEEEauthorblockN{Satya Srinivas Paladugu}
+\IEEEauthorblockA{Department of Artificial Intelligence\\Amrita Vishwa Vidyapeetham\\Bengaluru, India\\bl.ai.u4aid24063@bl.students.amrita.edu}
+\and
+\IEEEauthorblockN{Akshita Dindukurthi}
+\IEEEauthorblockA{Department of Artificial Intelligence\\Amrita Vishwa Vidyapeetham\\Bengaluru, India\\bl.ai.u4aid24004@bl.students.amrita.edu}
+\and
+\IEEEauthorblockN{Prithvi S}
+\IEEEauthorblockA{Department of Artificial Intelligence\\Amrita Vishwa Vidyapeetham\\Bengaluru, India\\bl.ai.u4aid24076@bl.students.amrita.edu}
+\and
+\IEEEauthorblockN{Ekansh Khullar}
+\IEEEauthorblockA{Department of Artificial Intelligence\\Amrita Vishwa Vidyapeetham\\Bengaluru, India\\bl.ai.u4aid24075@bl.students.amrita.edu}
+\and
+\IEEEauthorblockN{Dr. Sirisha Tadepalli}
+\IEEEauthorblockA{Department of Artificial Intelligence\\Amrita Vishwa Vidyapeetham\\Bengaluru, India\\t\_sirisha@blr.amrita.edu}
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present AudioScrubber, a deep learning pipeline for denoising frequency-modulated (FM) radio audio captured with commodity software-defined radios (SDRs). The system pairs spectrum-sourced FM noise with clean speech and music datasets to train waveform (1D U-Net) and spectrogram (STFT U-Net) denoisers. A streaming stack integrates SDR\#, VB-CABLE, and a PyTorch runtime to deliver real-time denoising at \SI{44.1}{kHz} with sub-\SI{200}{ms} latency. Empirically, speech-focused 1D U-Net models outperform music-specific and general models; 1D U-Net also surpasses the STFT variant in subjective quality. We detail data sourcing, on-the-fly noise mixing, model architectures, training regimen, and live inference design.
+\end{abstract}
+
+\begin{IEEEkeywords}
+FM denoising, software-defined radio, U-Net, speech enhancement, real-time audio, VB-CABLE, SDR\#.
+\end{IEEEkeywords}
+
+\section{Introduction}
+Reliable FM reception in urban RF environments is hindered by multipath fading, adjacent-channel interference, and front-end noise. Traditional filtering struggles against broadband, nonstationary artifacts. Deep learning denoisers can model such noise directly in the time or time-frequency domain, improving perceptual quality for speech and music. We target practical FM listening and downstream ASR using low-cost RTL-SDR hardware and real FM noise captured by sweeping the band. Noise is injected on-the-fly at randomized SNRs to avoid static corpora. Our primary model is a 1D U-Net on waveforms; an STFT 2D U-Net is included for frequency-domain experiments. A real-time pipeline couples SDR\#, VB-CABLE, and a PyTorch inference engine (sounddevice I/O) with \num{8192}-sample chunks balancing latency and context.
+
+	extbf{Contributions:} (1) Spectrum-sourced FM noise capture and on-the-fly SNR mixing; (2) waveform and STFT U-Net models packaged with dynamic loader; (3) real-time SDR stack (SDR\# + VB-CABLE + PyTorch) at \SI{44.1}{kHz}; (4) qualitative ranking showing Speech $>$ Music $>$ General modes and 1D U-Net $>$ STFT.
+
+\section{Related Work}
+% Summarize classical FM denoising, spectral subtraction, Wiener filtering, and recent deep speech enhancement (SEGAN, Demucs, MetricGAN, Conv-TasNet). Position our 1D/2D U-Net choice and FM-specific noise capture.
+
+\section{Dataset and Noise Acquisition}
+\subsection{Clean Corpora}
+LibriSpeech dev-clean and dev-other resampled to \SI{44.1}{kHz}, mono (speech mode). Curated mono music clips at \SI{44.1}{kHz} under \texttt{dataset/music} (music mode). General mode blends both but performs worst in FM denoising.
+
+\subsection{FM Noise}
+Real FM noise recorded by scanning the FM band; stored as \texttt{dataset/noise/FM\_Noise.wav}. Non-synthetic, spectrum-sourced interference.
+
+\subsection{On-the-Fly Mixing}
+Clean clips are cropped/padded to 88,192 samples (\textasciitilde2 s) and mixed with random noise segments at randomized SNRs inside the dataloader (no pre-generated noisy set). Benefits: memory light, high variety, faithful FM artifacts.
+
+\subsection{Formats and Rates}
+All training audio is mono at \SI{44.1}{kHz}. Files are FLAC/WAV; loaders convert to float32. Training segments are divisible by 16 to align with four U-Net downsamplings.
+
+\section{Models}
+\subsection{Waveform 1D U-Net}
+Encoder-decoder with skip connections on raw audio (in/out channels = 1). Four downsampling stages; kernel size tuned for speech bandwidth. Implemented in \texttt{src/fm/neuralnets/neuralnet.py}.
+
+\subsection{STFT 2D U-Net}
+Operates on magnitude spectrograms (n\_fft=2048, hop=512). Four down/up layers with skip connections. Implemented in \texttt{src/fm/neuralnets/stft\_unet2d.py}.
+
+\subsection{Model Zoo}
+Exports under \texttt{saved\_models/FM/FinalModels}: 1D U-Net and STFT, each with speech, music, general variants. Dynamic loader auto-detects architecture/mode.
+
+\subsection{Design Rationale}
+1D U-Net preserves waveform phase and minimizes latency; STFT U-Net can target narrowband noise but adds transform overhead. Empirically, 1D outperforms STFT on FM speech/music.
+
+\section{Training Methodology}
+\begin{itemize}[leftmargin=*]
+  \item Optimizer: Adam/AdamW, LR \num{1e-4}; gradient clip 1.0.
+  \item Batch: 2--4; epochs: 50--100; ReduceLROnPlateau scheduler; checkpoints every 5 epochs; best-model on val loss.
+  \item Data: on-the-fly SNR mixing with FM noise; train/val split 80/20.
+  \item Hardware: CUDA when available; streaming dataset to limit RAM.
+  \item Checkpoints: saved to \texttt{saved\_models/FM/checkpoints}; finals to \texttt{saved\_models/FM/FinalModels}.
+  \item Segment length: 88,192 samples (\textasciitilde2 s) for stable context and divisibility by 16.
+\end{itemize}
+
+\section{Inference Pipelines}
+\subsection{Offline}
+Chunked denoising (pad to 88,192), concatenate, and emit report plots (waveforms, spectrograms, estimated SNR gain). Script: \texttt{src/inference\_fm.py}.
+
+\subsection{Real-Time Stack}
+RTL-SDR \textrightarrow{} SDR\# (FM demod) \textrightarrow{} VB-CABLE ("CABLE Input"/"CABLE Output") \textrightarrow{} sounddevice stream \textrightarrow{} PyTorch model \textrightarrow{} speakers. Audio thread enqueues \num{8192}-sample chunks; AI thread denoises; last-chunk fallback avoids gaps. Optional live plots. Script: \texttt{src/live\_denoise.py}.
+
+\paragraph{Detailed Workflow} SDR\# tunes FM and outputs PCM to "CABLE Input". The Python stream listens to "CABLE Output" at \SI{44.1}{kHz}, blocksize \num{8192}. An audio callback enqueues chunks; a separate AI thread pops, denoises with the selected model (mode: speech/music/general; arch: 1dunet/stft), and requeues clean audio. If the queue is empty, the last output is replayed to avoid gaps. Optional live plots display waveform and spectrum. Ctrl+C triggers graceful stop and a 10 s report (waveforms, spectrograms, estimated SNR gain).
+
+\paragraph{Device Settings} In SDR\#, set audio output to VB-CABLE "CABLE Input" at \SI{44.1}{kHz}. In \texttt{live\_denoise.py}, choose \texttt{--input-device "CABLE Output"}, optional \texttt{--output-device <speakers>}, \texttt{--mode speech}, \texttt{--architecture 1dunet}, \texttt{--chunk-size 8192}, add \texttt{--cpu} if no GPU.
+
+\section{Results and Observations}
+Empirical ranking: Speech model $>$ Music $>$ General for FM denoising. 1D U-Net $>$ STFT in subjective quality. Insert PESQ/STOI/SNR tables when measured.
+
+\section{Ablations and Notes}
+\begin{itemize}[leftmargin=*]
+  \item Chunk size: \num{8192} balances latency (\textasciitilde186 ms) and context; \num{4096} is available but can reduce quality.
+  \item STFT variant: present but not deeply benchmarked; expected better narrowband suppression at higher compute cost.
+  \item Dataset mix: speech-only models generalize best to FM voice; music models excel on tonal content but trail on speech intelligibility.
+\end{itemize}
+
+\section{Conclusion}
+AudioScrubber combines real FM noise capture, on-the-fly mixing, and lightweight U-Nets to deliver practical FM denoising on commodity SDR setups. Future work: quantitative evaluations, overlap-add for smoother live output, and expanded real-world noise captures.
+
+\section*{Acknowledgment}
+% Add funding or lab acknowledgments here if applicable.
+
+\bibliographystyle{IEEEtran}
+% \bibliography{references}
+
+\end{document}
