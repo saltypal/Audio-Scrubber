@@ -1,72 +1,167 @@
-# AudioScrubber — FM Denoising Readme
+# AudioScrubber - Full Repository Guide
 
-## Overview
-AudioScrubber denoises FM audio in real time and offline using deep-learning U-Nets. It targets noisy SDR captures (RTL-SDR/SDR#) and produces cleaner audio for speech and music. The project centers on FM noise captured from the spectrum and models trained to remove it.
+Real-time and offline FM audio denoising stack combining deep-learning U-Nets, classical denoisers, and an interactive PyQt5 UI. Designed for SDR captures (RTL-SDR/SDR#/VB-CABLE) at 44.1 kHz.
 
-## Hardware Receiver
-- Primary receiver: RTL-SDR (USB dongle). SDR# is used to tune FM stations and output baseband audio via VB-CABLE.
-- Virtual audio cable: VB-CABLE links SDR# output to our Python pipeline for live denoising.
-- Optional front-ends: Airspy or other SDRs can be substituted if they emit PCM audio into VB-CABLE at 44.1 kHz.
+---
 
-## Dataset and Noise
-- Clean speech: LibriSpeech dev-clean/dev-other at 44.1 kHz (resampled) as configured in [config.py](config.py#L9-L145).
-- Music set: curated music clips stored under `dataset/music` (mono, 44.1 kHz).
-- Noise capture: real FM noise recorded by scanning across the FM band; saved as `dataset/noise/FM_Noise.wav`. This is not synthetic white noise but spectrum-sourced interference.
-- On-the-fly mixing: during training, clean clips are randomly cropped/padded to 88,192 samples (~2 s) and mixed with FM noise at random SNRs inside the dataloader ([src/fm/1dunet/backshot.py](src/fm/1dunet/backshot.py#L20-L211)). This keeps memory low and diversifies examples.
-- Dataset categories / modes:
-	- Speech (LibriSpeech speech at 44.1 kHz, FLAC/wav after resample)
-	- Music (music clips at 44.1 kHz, FLAC/wav)
-	- General (a combined model; shares the same sample rate but broader content)
+## Table of Contents
+- What This Project Does
+- High-Level Architecture
+- Live Denoising UI (PyQt5)
+- Command-Line Tools (Live & Offline)
+- Models (Deep Learning) and Classical Denoisers
+- Data, Noise, and Chunking
+- Training Pipeline
+- Configuration
+- Repository Map
+- Results & Reports
+- Troubleshooting & Tips
+- References & Further Reading
 
-## Chunking Strategy
-- Training segment length: 88,192 samples (~2 s at 44.1 kHz), divisible by 16 for 4 U-Net downsamplings. Longer segments help the model learn broader temporal context and reduce boundary artifacts.
-- Live/streaming chunk: typically 8,192 samples (~186 ms) in [src/live_denoise.py](src/live_denoise.py#L1-L220) with fallback to 4,096 in [config.py](config.py#L100-L173). The chunk is large enough to preserve context for denoising yet small enough for low latency. Fallback reuse of the last chunk avoids audible gaps if the AI thread lags.
+---
 
-## Models
-- 1D U-Net (waveform): [src/fm/neuralnets/neuralnet.py](src/fm/neuralnets/neuralnet.py). Encoder-decoder with skip connections on raw waveforms.
-- STFT 2D U-Net (spectrogram): [src/fm/neuralnets/stft_unet2d.py](src/fm/neuralnets/stft_unet2d.py). Operates on magnitude spectrograms; alternative path, not fully benchmarked in practice.
-- Model loader for dynamic selection and architecture detection: [src/fm/model_loader.py](src/fm/model_loader.py#L1-L150).
-- Exported weights: `saved_models/FM/FinalModels/FM_Final_1DUNET/{general,music,speech}.pth` and `FM_Final_STFT/{general,music,speech}.pth`.
+## What This Project Does
+- Cleans noisy FM audio streams in real time (SDR# -> VB-CABLE -> AudioScrubber -> speakers).
+- Batch/offline denoising of files or folders with optional visual reports.
+- Side-by-side algorithm comparison, including a Mass Compare mode that auto-runs multiple denoisers and saves consolidated plots/CSVs/JSON (white-background plots).
+- Supports both deep-learning U-Nets (waveform and STFT) and classical methods (spectral subtraction, Wiener, adaptive MMSE/STSA).
+
+---
+
+## High-Level Architecture
+- **Front-end UI**: [src/ui/live_denoiser_app.py](src/ui/live_denoiser_app.py) - PyQt5 dashboard with tabs for live view, SNR comparison, algorithm comparison, performance metrics, and Mass Compare automation.
+- **Audio engine**: queue-based worker inside the UI (sounddevice I/O, denoiser dispatch, metrics, plotting hooks).
+- **Denoiser registry**: [src/fm/classical/__init__.py](src/fm/classical/__init__.py) and [src/fm/model_loader.py](src/fm/model_loader.py) register classical and DL denoisers for discovery in UI/CLI.
+- **Deep-learning models**: waveform 1D U-Net and STFT 2D U-Net under [src/fm/neuralnets](src/fm/neuralnets), served by model loader and training scripts.
+- **Classical denoisers**: spectral subtraction, standard/adaptive Wiener, and MMSE-STSA variants in [src/fm/classical](src/fm/classical).
+- **CLI tools**: live runner [src/live_denoise.py](src/live_denoise.py), offline runner [src/inference_fm.py](src/inference_fm.py), inference orchestrator [src/inference/main_inference.py](src/inference/main_inference.py).
+
+---
+
+## Live Denoising UI (PyQt5)
+File: [src/ui/live_denoiser_app.py](src/ui/live_denoiser_app.py)
+
+### Tabs
+- Live View: waveform and spectrum for noisy vs denoised audio, device selection, start/stop.
+- SNR Comparison: live SNR tracking before/after denoising.
+- Algorithm Comparison: run selected algorithms side-by-side on a short capture.
+- Performance: per-chunk processing time, CPU/GPU/memory, dropped chunks.
+- Mass Compare: auto-runs multiple algorithms sequentially (default 30 s each), plots all traces, saves PNG/CSV/JSON automatically with white backgrounds.
+
+### Key Behaviors
+- sounddevice stream at 44.1 kHz; queue-based AI thread; fallback to last output to avoid gaps.
+- Dynamic denoiser switching (deep-learning or classical) via combo box.
+- Baseline SNR tracked; per-algorithm SNR/latency recorded during Mass Compare.
+- Auto-save of Mass Compare outputs to results/mass_compare/:
+  - SNR comparison plot (white background PNG)
+  - Results CSV (per algorithm metrics)
+  - Detailed JSON (raw traces, summary: best SNR, fastest)
+
+### Quick Start (UI)
+1) Start SDR# and set audio output to CABLE Input (VB-Audio Virtual Cable) at 44.1 kHz.
+2) In AudioScrubber, select input device CABLE Output and your speakers as output.
+3) Pick a denoiser (DL speech/music/general or classical) and click Start.
+4) Use Mass Compare tab to batch-test algorithms and auto-save graphs.
+
+---
+
+## Command-Line Tools
+
+### Live CLI
+File: [src/live_denoise.py](src/live_denoise.py)
+
+Run real-time denoising headless:
+```bash
+python src/live_denoise.py --mode speech --architecture 1dunet --input-device "CABLE Output" --chunk-size 8192
+```
+Options: --output-device, --cpu, --model <path>, --plot (enable live plots), --passthrough (bypass model).
+
+### Offline CLI
+File: [src/inference_fm.py](src/inference_fm.py)
+
+Denoise a file or folder and emit report PNG:
+```bash
+python src/inference_fm.py noisy.wav denoised.wav
+```
+Uses default models from config; chunked inference with padding to training length.
+
+### Inference Orchestrator
+File: [src/inference/main_inference.py](src/inference/main_inference.py)
+
+Batch utilities and plotting helpers for inference experiments.
+
+---
+
+## Models (Deep Learning)
+- Waveform 1D U-Net: [src/fm/neuralnets/neuralnet.py](src/fm/neuralnets/neuralnet.py) - encoder/decoder with skips on raw audio.
+- STFT 2D U-Net: [src/fm/neuralnets/stft_unet2d.py](src/fm/neuralnets/stft_unet2d.py) - magnitude-spectrogram model.
+- Loader/registry: [src/fm/model_loader.py](src/fm/model_loader.py) - infers architecture/mode, restricts to compatible FinalModels, exposes DLDenoiserWrapper for UI.
+- Weights: [saved_models/FM/FinalModels](saved_models/FM/FinalModels) - speech/music/general for 1D U-Net and STFT; plus checkpoints under saved_models/FM/models.
+
+### Classical Denoisers
+Folder: [src/fm/classical](src/fm/classical)
+- [spectral_subtraction.py](src/fm/classical/spectral_subtraction.py): Boll 1979, oversubtraction, multiband option, spectral flooring.
+- [wiener_filter.py](src/fm/classical/wiener_filter.py): optimal linear MMSE Wiener with noise PSD estimation.
+- [adaptive_wiener.py](src/fm/classical/adaptive_wiener.py): decision-directed a priori SNR + MMSE-STSA (Ephraim & Malah) with adaptive noise tracking.
+- Registry in [__init__.py](src/fm/classical/__init__.py) exposes multiple variants (standard, adaptive, multiband, conservative/agg modes).
+
+---
+
+## Data, Noise, and Chunking
+- Clean speech: LibriSpeech dev-clean/dev-other resampled to 44.1 kHz under [dataset/LibriSpeech](dataset/LibriSpeech).
+- Music: curated mono clips under [dataset/instant](dataset/instant).
+- Noise: real FM noise sweeps in [dataset/noise](dataset/noise).
+- Training segment length: 88,192 samples (~2 s), divisible by 16 for 4 U-Net downsamples.
+- Live chunk: 8,192 samples (~186 ms) default; 4,096 fallback (configurable in [config.py](config.py)).
+- On-the-fly mixing during training: random crop/pad of clean + random noise slice + random SNR per sample (see [src/fm/1dunet/backshot.py](src/fm/1dunet/backshot.py)). Keeps memory low and diversifies examples.
+
+---
 
 ## Training Pipeline (1D U-Net)
-- Script: [src/fm/1dunet/backshot.py](src/fm/1dunet/backshot.py).
-- Data: LibriSpeech clean audio; noise: FM_Noise.wav; random SNR per sample.
-- Hyperparams: LR 1e-4 Adam, batch 2–4, epochs 50–100, gradient clip 1.0, ReduceLROnPlateau scheduler, checkpoints every 5 epochs, best-model saving on val loss.
-- Memory optimizations: lazy noise load, streaming file reads, small batch size, CUDA auto-detect.
+File: [src/fm/1dunet/backshot.py](src/fm/1dunet/backshot.py)
+- Streams LibriSpeech clean audio; lazily loads FM noise.
+- Random SNR mixing per example; segment length 88,192.
+- Defaults: Adam LR 1e-4, batch 2–4, epochs 50–100, grad clip 1.0, ReduceLROnPlateau, checkpoints every 5 epochs, best-on-val save.
+- CUDA auto-detect; small batches to manage memory.
 
-## Offline Inference
-- Script: [src/inference_fm.py](src/inference_fm.py).
-- Usage: point to a noisy file or a folder; outputs denoised audio and a PNG report (waveforms, spectrograms, estimated SNR gain).
-- Defaults: model path from config (`saved_models/FM/unet1d_music_best.pth` or final FM models), sample rate 44.1 kHz, chunked processing with padding to the training length.
+---
 
-## Real-Time Pipeline (Detailed)
-- Entry: [src/live_denoise.py](src/live_denoise.py).
-- Signal chain: RTL-SDR → SDR# (tuned FM) → VB-CABLE “CABLE Input” → Python (sounddevice) captures “CABLE Output” → AI denoiser → speakers.
-- Threads/queues: audio callback enqueues chunks; AI thread dequeues, denoises with selected model, re-enqueues for playback. Last-output fallback prevents gaps. History buffers feed post-run reports.
-- Model selection: auto-discovers best match (mode general/music/speech; arch 1dunet/stft) from `saved_models/FM/FinalModels` or user-specified `--model`.
-- Tools used:
-	- SDR#: tunes FM band and outputs audio.
-	- VB-CABLE: virtual audio device bridging SDR# to Python.
-	- sounddevice: real-time capture/playback at 44.1 kHz.
-	- Torch: model inference on CPU or CUDA.
-	- Optional live plots: waveform + spectrum monitor.
-- Settings to check:
-	- SDR#: set audio output to “CABLE Input (VB-Audio Virtual Cable)”, 44.1 kHz.
-	- live_denoise args: `--input-device "CABLE Output"`, optional `--output-device <speakers>`, `--mode {general|music|speech}`, `--architecture {1dunet|stft}`, `--chunk-size 8192`, `--cpu` if no GPU.
-- Shutdown: Ctrl+C triggers graceful stop and saves a live session report PNG (waveforms, spectrograms, estimated SNR improvement).
+## Configuration
+- Primary config: [config.py](config.py)  paths, audio params, training defaults, RTL-SDR/VB-CABLE settings, model defaults, chunk sizes.
+- Alt config: [config/config.py](config/config.py)  same structure, different FM model path mapping.
 
-## Qualitative Verdict (observed)
-- Model modes: Speech >>> Music >>> General for FM denoising quality in practice.
-- Architectures: 1D U-Net >> STFT U-Net (STFT model present but not fully exercised in runs).
+---
 
-## Quick Commands
-- Offline: `python src/inference_fm.py <noisy.wav> <denoised.wav>`
-- Live: `python src/live_denoise.py --mode speech --architecture 1dunet --input-device "CABLE Output" --chunk-size 8192`
+## Repository Map (selected)
+- [config.py](config.py) and [config/config.py](config/config.py): global settings.
+- [src/ui/live_denoiser_app.py](src/ui/live_denoiser_app.py): PyQt5 UI and audio engine.
+- [src/live_denoise.py](src/live_denoise.py): CLI live runner.
+- [src/inference_fm.py](src/inference_fm.py): offline denoising.
+- [src/fm/model_loader.py](src/fm/model_loader.py): DL model discovery and wrapping.
+- [src/fm/neuralnets](src/fm/neuralnets): 1D/2D U-Net definitions.
+- [src/fm/classical](src/fm/classical): classical denoisers and registry.
+- [docs](docs): FM deep-dive, Mermaid diagrams, IEEE-style report draft.
+- [saved_models/FM/FinalModels](saved_models/FM/FinalModels): shipped checkpoints.
+- [results](results): saved reports and Mass Compare outputs.
 
-## Project Configuration
-- Central settings: [config.py](config.py#L9-L326) (paths, audio settings, training, RTL-SDR, model defaults).
-- Alternate config variant: [config/config.py](config/config.py#L9-L326) (same structure, different FM final path mapping).
+---
 
-## Notes
-- All audio is processed mono at 44.1 kHz.
-- Training and inference expect model/audio lengths divisible by 16 to align with U-Net pooling.
+## Results & Reports
+- Offline and live runs can emit PNG reports (waveform, spectrogram, estimated SNR gain).
+- Mass Compare auto-saves to results/mass_compare/ with PNG (white background), CSV, and JSON summaries.
+
+---
+
+## Troubleshooting & Tips
+- Ensure SDR# outputs to CABLE Input and Python listens to CABLE Output at 44.1 kHz.
+- If GPU unavailable or unstable, add --cpu in live CLI or select CPU in UI; classical denoisers are CPU-light.
+- Chunk underruns: reduce chunk size or disable heavy models; fallback replays last chunk to mask gaps.
+- Model mismatch errors: use weights from saved_models/FM/FinalModels (UI loader already restricts here).
+- Security warning from torch.load: models are trusted local checkpoints; you may set weights_only=True if you modify loader for untrusted files.
+
+---
+
+## References & Further Reading
+- Detailed FM guide: [docs/FM_README.md](docs/FM_README.md)
+- IEEE-style report draft: [docs/FM_IEEE_Report.md](docs/FM_IEEE_Report.md)
+- Mermaid runtime diagrams: [docs/live_denoise_mermaid.md](docs/live_denoise_mermaid.md)
