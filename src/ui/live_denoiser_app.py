@@ -280,6 +280,9 @@ class AudioEngine:
             
             self.snr_history_output.append(snr_improvement)
             
+            # Store processing time and SNR for mass comparison if running
+            self.signals.update_snr.emit(0.0, snr_improvement)  # Will be handled by UI
+            
             # Store in buffers
             self.input_buffer.append(noisy_chunk)
             self.output_buffer.append(clean_chunk)
@@ -392,6 +395,7 @@ class LiveDenoiserApp(QMainWindow):
         self.signals.update_waveform.connect(self._on_waveform_update)
         self.signals.update_spectrum.connect(self._on_spectrum_update)
         self.signals.update_metrics.connect(self._on_metrics_update)
+        self.signals.update_snr.connect(self._on_snr_update)
         self.signals.status_message.connect(self._on_status_message)
         self.signals.error_occurred.connect(self._on_error)
         
@@ -414,6 +418,18 @@ class LiveDenoiserApp(QMainWindow):
         
         # Comparison results
         self.comparison_results: Dict[str, List[float]] = {}
+        
+        # Streaming state
+        self.streaming = False
+        
+        # Mass comparison state
+        self.mass_compare_running = False
+        self.mass_compare_results: Dict[str, Dict] = {}
+        self.mass_compare_queue = []
+        self.mass_compare_current_index = 0
+        self.mass_compare_timer = QTimer()
+        self.mass_compare_timer.timeout.connect(self._mass_compare_tick)
+        self.mass_compare_start_time = 0
         
         # Build UI
         self._build_ui()
@@ -485,6 +501,10 @@ class LiveDenoiserApp(QMainWindow):
         # Tab 4: Performance
         perf_tab = self._build_performance_tab()
         tabs.addTab(perf_tab, "⚡ Performance")
+        
+        # Tab 5: Mass Compare
+        mass_compare_tab = self._build_mass_compare_tab()
+        tabs.addTab(mass_compare_tab, "🔥 Mass Compare")
         
         main_layout.addWidget(tabs)
         
@@ -789,6 +809,632 @@ class LiveDenoiserApp(QMainWindow):
         
         return widget
     
+    def _build_mass_compare_tab(self) -> QWidget:
+        """Build mass comparison tab for testing multiple algorithms."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Controls section
+        controls_group = QGroupBox("Mass Comparison Controls")
+        controls_layout = QVBoxLayout(controls_group)
+        
+        # Description
+        desc_label = QLabel(
+            "Mass Compare runs multiple algorithms automatically for 30 seconds each "
+            "and plots all results in a single comparison graph. "
+            "📈 Perfect for evaluating DL models vs Classical algorithms at a glance!"
+        )
+        desc_label.setWordWrap(True)
+        desc_label.setStyleSheet("color: #88C999; font-style: italic; padding: 10px;")
+        controls_layout.addWidget(desc_label)
+        
+        # Algorithm selection
+        algo_group = QGroupBox("Select Algorithms to Test")
+        algo_layout = QGridLayout(algo_group)
+        
+        self.mass_compare_checkboxes: Dict[str, QCheckBox] = {}
+        row, col = 0, 0
+        for key, denoiser in self.denoisers.items():
+            cb = QCheckBox(f"{denoiser.name} [{denoiser.category}]")
+            cb.setChecked(True)  # Default to all selected
+            self.mass_compare_checkboxes[key] = cb
+            algo_layout.addWidget(cb, row, col)
+            col += 1
+            if col >= 2:  # 2 columns
+                col = 0
+                row += 1
+        
+        controls_layout.addWidget(algo_group)
+        
+        # Selection helpers
+        helpers_layout = QHBoxLayout()
+        
+        select_all_btn = QPushButton("Select All")
+        select_all_btn.clicked.connect(lambda: self._mass_compare_select_all(True))
+        helpers_layout.addWidget(select_all_btn)
+        
+        select_none_btn = QPushButton("Select None")
+        select_none_btn.clicked.connect(lambda: self._mass_compare_select_all(False))
+        helpers_layout.addWidget(select_none_btn)
+        
+        select_classical_btn = QPushButton("Classical Only")
+        select_classical_btn.clicked.connect(lambda: self._mass_compare_select_category("Classical"))
+        helpers_layout.addWidget(select_classical_btn)
+        
+        select_dl_btn = QPushButton("DL Models Only")
+        select_dl_btn.clicked.connect(lambda: self._mass_compare_select_category("Deep Learning"))
+        helpers_layout.addWidget(select_dl_btn)
+        
+        controls_layout.addLayout(helpers_layout)
+        
+        # Test duration settings
+        duration_layout = QHBoxLayout()
+        duration_layout.addWidget(QLabel("Test Duration per Algorithm:"))
+        self.duration_spin = QSpinBox()
+        self.duration_spin.setMinimum(10)
+        self.duration_spin.setMaximum(120)
+        self.duration_spin.setValue(30)
+        self.duration_spin.setSuffix(" seconds")
+        duration_layout.addWidget(self.duration_spin)
+        duration_layout.addStretch()
+        controls_layout.addLayout(duration_layout)
+        
+        # Control buttons
+        buttons_layout = QHBoxLayout()
+        
+        self.start_mass_compare_btn = QPushButton("🚀 Start Mass Compare")
+        self.start_mass_compare_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2E7D32;
+                color: white;
+                font-weight: bold;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #388E3C;
+            }
+            QPushButton:disabled {
+                background-color: #616161;
+            }
+        """)
+        self.start_mass_compare_btn.clicked.connect(self._start_mass_compare)
+        buttons_layout.addWidget(self.start_mass_compare_btn)
+        
+        self.stop_mass_compare_btn = QPushButton("⏹ Stop Compare")
+        self.stop_mass_compare_btn.setEnabled(False)
+        self.stop_mass_compare_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #C62828;
+                color: white;
+                font-weight: bold;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #D32F2F;
+            }
+            QPushButton:disabled {
+                background-color: #616161;
+            }
+        """)
+        self.stop_mass_compare_btn.clicked.connect(self._stop_mass_compare)
+        buttons_layout.addWidget(self.stop_mass_compare_btn)
+        
+        clear_results_btn = QPushButton("🗑 Clear Results")
+        clear_results_btn.clicked.connect(self._clear_mass_compare_results)
+        buttons_layout.addWidget(clear_results_btn)
+        
+        controls_layout.addLayout(buttons_layout)
+        
+        layout.addWidget(controls_group)
+        
+        # Progress section
+        progress_group = QGroupBox("Progress")
+        progress_layout = QVBoxLayout(progress_group)
+        
+        self.mass_progress_label = QLabel("Ready to start mass comparison")
+        self.mass_progress_label.setAlignment(Qt.AlignCenter)
+        progress_layout.addWidget(self.mass_progress_label)
+        
+        self.mass_progress_bar = QProgressBar()
+        self.mass_progress_bar.setVisible(False)
+        progress_layout.addWidget(self.mass_progress_bar)
+        
+        layout.addWidget(progress_group)
+        
+        # Results table
+        results_group = QGroupBox("Comparison Results")
+        results_layout = QVBoxLayout(results_group)
+        
+        self.mass_results_table = QTableWidget()
+        self.mass_results_table.setColumnCount(6)
+        self.mass_results_table.setHorizontalHeaderLabels([
+            "Algorithm", "Category", "Avg SNR (dB)", "SNR Improvement (dB)", 
+            "Processing Time (ms)", "Status"
+        ])
+        self.mass_results_table.horizontalHeader().setStretchLastSection(True)
+        results_layout.addWidget(self.mass_results_table)
+        
+        layout.addWidget(results_group)
+        
+        # Comparison plot
+        plot_group = QGroupBox("SNR Comparison Plot")
+        plot_layout = QVBoxLayout(plot_group)
+        
+        self.mass_compare_plot = pg.PlotWidget()
+        self.mass_compare_plot.setLabel('left', 'SNR Improvement (dB)')
+        self.mass_compare_plot.setLabel('bottom', 'Time (seconds)')
+        self.mass_compare_plot.addLegend()
+        self.mass_compare_plot.showGrid(x=True, y=True, alpha=0.3)
+        
+        plot_layout.addWidget(self.mass_compare_plot)
+        layout.addWidget(plot_group)
+        
+        # Initialize mass compare variables
+        self.mass_compare_running = False
+        self.mass_compare_timer = QTimer()
+        self.mass_compare_timer.timeout.connect(self._mass_compare_tick)
+        self.mass_compare_results: Dict[str, Dict] = {}
+        self.current_algorithm_index = 0
+        self.current_algorithm_time = 0
+        self.selected_algorithms = []
+        self.mass_compare_colors = [
+            '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57',
+            '#FF9FF3', '#54A0FF', '#5F27CD', '#00D2D3', '#FF9F43'
+        ]
+        
+        return widget
+    
+    def _mass_compare_select_all(self, select: bool):
+        """Select or deselect all algorithms."""
+        for cb in self.mass_compare_checkboxes.values():
+            cb.setChecked(select)
+    
+    def _mass_compare_select_category(self, category: str):
+        """Select only algorithms from a specific category."""
+        for key, cb in self.mass_compare_checkboxes.items():
+            denoiser = self.denoisers[key]
+            cb.setChecked(denoiser.category == category)
+    
+    def _start_mass_compare(self):
+        """Start mass comparison testing."""
+        # Check if audio is streaming
+        if not self.streaming:
+            QMessageBox.warning(
+                self, "Warning",
+                "Please start audio streaming first before running mass comparison."
+            )
+            return
+        
+        # Get selected algorithms
+        self.selected_algorithms = [
+            key for key, cb in self.mass_compare_checkboxes.items() 
+            if cb.isChecked()
+        ]
+        
+        if not self.selected_algorithms:
+            QMessageBox.warning(
+                self, "Warning",
+                "Please select at least one algorithm to test."
+            )
+            return
+        
+        # Initialize comparison
+        self.mass_compare_running = True
+        self.current_algorithm_index = 0
+        self.current_algorithm_time = 0
+        self.mass_compare_results.clear()
+        
+        # Setup UI
+        self.start_mass_compare_btn.setEnabled(False)
+        self.stop_mass_compare_btn.setEnabled(True)
+        self.mass_progress_bar.setVisible(True)
+        self.mass_progress_bar.setMaximum(len(self.selected_algorithms) * self.duration_spin.value())
+        self.mass_progress_bar.setValue(0)
+        
+        # Clear previous results
+        self._clear_mass_compare_results()
+        
+        # Start with first algorithm
+        self._start_algorithm_test()
+        
+        # Start timer
+        self.mass_compare_timer.start(1000)  # 1 second intervals
+        
+        self.logger.info(f"Started mass comparison with {len(self.selected_algorithms)} algorithms")
+    
+    def _stop_mass_compare(self):
+        """Stop mass comparison testing."""
+        self.mass_compare_running = False
+        self.mass_compare_timer.stop()
+        
+        # Reset UI
+        self.start_mass_compare_btn.setEnabled(True)
+        self.stop_mass_compare_btn.setEnabled(False)
+        self.mass_progress_bar.setVisible(False)
+        self.mass_progress_label.setText("Mass comparison stopped")
+        
+        self.logger.info("Mass comparison stopped by user")
+    
+    def _mass_compare_tick(self):
+        """Handle mass comparison timer tick."""
+        if not self.mass_compare_running:
+            return
+        
+        self.current_algorithm_time += 1
+        total_progress = (self.current_algorithm_index * self.duration_spin.value()) + self.current_algorithm_time
+        self.mass_progress_bar.setValue(total_progress)
+        
+        current_algo_key = self.selected_algorithms[self.current_algorithm_index]
+        current_algo_name = self.denoisers[current_algo_key].name
+        
+        self.mass_progress_label.setText(
+            f"Testing {current_algo_name} ({self.current_algorithm_time}/{self.duration_spin.value()}s) "
+            f"- Algorithm {self.current_algorithm_index + 1}/{len(self.selected_algorithms)}"
+        )
+        
+        # Check if current algorithm test is complete
+        if self.current_algorithm_time >= self.duration_spin.value():
+            self._finish_algorithm_test()
+            
+            # Move to next algorithm
+            self.current_algorithm_index += 1
+            self.current_algorithm_time = 0
+            
+            if self.current_algorithm_index < len(self.selected_algorithms):
+                self._start_algorithm_test()
+            else:
+                # All algorithms tested
+                self._finish_mass_compare()
+    
+    def _start_algorithm_test(self):
+        """Start testing current algorithm."""
+        algo_key = self.selected_algorithms[self.current_algorithm_index]
+        algo_name = self.denoisers[algo_key].name
+        
+        # Switch to this algorithm
+        self.current_denoiser_key = algo_key
+        self.denoiser_combo.setCurrentText(algo_name)
+        
+        # Initialize result tracking for this algorithm
+        self.mass_compare_results[algo_key] = {
+            'name': algo_name,
+            'category': self.denoisers[algo_key].category,
+            'snr_values': [],
+            'processing_times': [],
+            'start_time': time.time()
+        }
+        
+        self.logger.info(f"Started testing algorithm: {algo_name}")
+    
+    def _finish_algorithm_test(self):
+        """Finish testing current algorithm and record results."""
+        algo_key = self.selected_algorithms[self.current_algorithm_index]
+        results = self.mass_compare_results[algo_key]
+        
+        # Calculate statistics
+        if results['snr_values']:
+            avg_snr = np.mean(results['snr_values'])
+            snr_improvement = avg_snr - self.baseline_snr if hasattr(self, 'baseline_snr') else 0
+        else:
+            avg_snr = 0
+            snr_improvement = 0
+        
+        if results['processing_times']:
+            avg_processing_time = np.mean(results['processing_times'])
+        else:
+            avg_processing_time = 0
+        
+        results['avg_snr'] = avg_snr
+        results['snr_improvement'] = snr_improvement
+        results['avg_processing_time'] = avg_processing_time
+        results['status'] = "Completed"
+        
+        # Add to results table
+        self._add_result_to_table(algo_key, results)
+        
+        # Add to plot
+        self._add_result_to_plot(algo_key, results)
+        
+        self.logger.info(f"Finished testing algorithm: {results['name']} - Avg SNR: {avg_snr:.2f}dB")
+    
+    def _finish_mass_compare(self):
+        """Finish entire mass comparison."""
+        self.mass_compare_running = False
+        self.mass_compare_timer.stop()
+        
+        # Reset UI
+        self.start_mass_compare_btn.setEnabled(True)
+        self.stop_mass_compare_btn.setEnabled(False)
+        self.mass_progress_bar.setVisible(False)
+        self.mass_progress_label.setText(
+            f"Mass comparison complete! Tested {len(self.selected_algorithms)} algorithms."
+        )
+        
+        # Generate summary
+        self._generate_comparison_summary()
+        
+        # Automatically save mass comparison results
+        self._save_mass_compare_results()
+        
+        self.logger.info("Mass comparison completed successfully")
+    
+    def _add_result_to_table(self, algo_key: str, results: dict):
+        """Add algorithm result to results table."""
+        row = self.mass_results_table.rowCount()
+        self.mass_results_table.insertRow(row)
+        
+        self.mass_results_table.setItem(row, 0, QTableWidgetItem(results['name']))
+        self.mass_results_table.setItem(row, 1, QTableWidgetItem(results['category']))
+        self.mass_results_table.setItem(row, 2, QTableWidgetItem(f"{results['avg_snr']:.2f}"))
+        self.mass_results_table.setItem(row, 3, QTableWidgetItem(f"{results['snr_improvement']:.2f}"))
+        self.mass_results_table.setItem(row, 4, QTableWidgetItem(f"{results['avg_processing_time']:.2f}"))
+        self.mass_results_table.setItem(row, 5, QTableWidgetItem(results['status']))
+        
+        # Color code by category
+        color = QColor("#E8F5E8") if results['category'] == "Classical" else QColor("#E3F2FD")
+        for col in range(6):
+            self.mass_results_table.item(row, col).setBackground(color)
+    
+    def _add_result_to_plot(self, algo_key: str, results: dict):
+        """Add algorithm result to comparison plot."""
+        if not results['snr_values']:
+            return
+        
+        # Create time axis (in seconds)
+        time_axis = np.linspace(0, self.duration_spin.value(), len(results['snr_values']))
+        
+        # Get color for this algorithm
+        color_idx = self.current_algorithm_index % len(self.mass_compare_colors)
+        color = self.mass_compare_colors[color_idx]
+        
+        # Plot SNR improvement over time
+        snr_improvements = np.array(results['snr_values']) - (self.baseline_snr if hasattr(self, 'baseline_snr') else 0)
+        
+        self.mass_compare_plot.plot(
+            time_axis, snr_improvements,
+            pen=pg.mkPen(color, width=2),
+            name=f"{results['name']} ({results['avg_snr']:.1f}dB)"
+        )
+    
+    def _generate_comparison_summary(self):
+        """Generate and display comparison summary."""
+        if not self.mass_compare_results:
+            return
+        
+        # Find best performing algorithm
+        best_algo = max(
+            self.mass_compare_results.items(),
+            key=lambda x: x[1]['avg_snr']
+        )
+        
+        # Find fastest algorithm
+        fastest_algo = min(
+            self.mass_compare_results.items(),
+            key=lambda x: x[1]['avg_processing_time']
+        )
+        
+        summary_text = (
+            f"🏆 Best SNR: {best_algo[1]['name']} ({best_algo[1]['avg_snr']:.2f}dB)\n"
+            f"⚡ Fastest: {fastest_algo[1]['name']} ({fastest_algo[1]['avg_processing_time']:.2f}ms)\n"
+            f"📊 Total algorithms tested: {len(self.mass_compare_results)}"
+        )
+        
+        self.mass_progress_label.setText(summary_text)
+        self.mass_progress_label.setStyleSheet("color: #2E7D32; font-weight: bold;")
+    
+    def _clear_mass_compare_results(self):
+        """Clear all mass comparison results."""
+        self.mass_compare_results.clear()
+        self.mass_results_table.setRowCount(0)
+        self.mass_compare_plot.clear()
+        self.mass_compare_plot.addLegend()
+        self.mass_progress_label.setText("Ready to start mass comparison")
+        self.mass_progress_label.setStyleSheet("")
+    
+    def _save_mass_compare_results(self):
+        """Automatically save mass comparison results with white backgrounds."""
+        if not self.mass_compare_results:
+            return
+        
+        # Create results directory
+        results_dir = Path("results/mass_compare")
+        results_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate timestamp-based filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_filename = results_dir / f"mass_compare_{timestamp}"
+        
+        # Save the SNR comparison plot with white background
+        plot_filename = f"{base_filename}_snr_comparison.png"
+        self._save_plot_with_white_bg(self.mass_compare_plot, str(plot_filename))
+        
+        # Save results table as CSV
+        csv_filename = f"{base_filename}_results.csv"
+        self._save_mass_compare_csv(csv_filename)
+        
+        # Save detailed results as JSON
+        json_filename = f"{base_filename}_detailed.json"
+        self._save_mass_compare_json(json_filename)
+        
+        # Update status
+        self.status_bar.showMessage(
+            f"Mass comparison results saved to {results_dir.name}/ "
+            f"({len(self.mass_compare_results)} algorithms)"
+        )
+        self.logger.info(f"Mass comparison results saved: {base_filename}")
+    
+    def _save_mass_compare_csv(self, filename: str):
+        """Save mass comparison results as CSV."""
+        import csv
+        
+        with open(filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            
+            # Header
+            writer.writerow([
+                'Algorithm', 'Category', 'Avg SNR (dB)', 
+                'SNR Improvement (dB)', 'Avg Processing Time (ms)', 'Status'
+            ])
+            
+            # Data rows
+            for algo_key, results in self.mass_compare_results.items():
+                writer.writerow([
+                    results['name'],
+                    results['category'],
+                    f"{results['avg_snr']:.2f}",
+                    f"{results['snr_improvement']:.2f}",
+                    f"{results['avg_processing_time']:.2f}",
+                    results['status']
+                ])
+    
+    def _save_mass_compare_json(self, filename: str):
+        """Save detailed mass comparison results as JSON."""
+        import json
+        
+        # Prepare data for JSON serialization
+        export_data = {
+            'timestamp': datetime.now().isoformat(),
+            'test_duration_per_algorithm': self.duration_spin.value(),
+            'total_algorithms_tested': len(self.mass_compare_results),
+            'algorithms': {}
+        }
+        
+        for algo_key, results in self.mass_compare_results.items():
+            export_data['algorithms'][algo_key] = {
+                'name': results['name'],
+                'category': results['category'],
+                'avg_snr': float(results['avg_snr']),
+                'snr_improvement': float(results['snr_improvement']),
+                'avg_processing_time': float(results['avg_processing_time']),
+                'status': results['status'],
+                'num_samples': len(results['snr_values']),
+                'snr_values': [float(x) for x in results['snr_values']],
+                'processing_times': [float(x) for x in results['processing_times']]
+            }
+        
+        # Find best performers
+        if self.mass_compare_results:
+            best_snr = max(self.mass_compare_results.items(), key=lambda x: x[1]['avg_snr'])
+            fastest = min(self.mass_compare_results.items(), key=lambda x: x[1]['avg_processing_time'])
+            
+            export_data['summary'] = {
+                'best_snr_algorithm': best_snr[1]['name'],
+                'best_snr_value': float(best_snr[1]['avg_snr']),
+                'fastest_algorithm': fastest[1]['name'],
+                'fastest_time': float(fastest[1]['avg_processing_time'])
+            }
+        
+        with open(filename, 'w') as f:
+            json.dump(export_data, f, indent=2)
+        helpers_layout.addWidget(select_none_btn)
+        
+        select_classical_btn = QPushButton("Classical Only")
+        select_classical_btn.clicked.connect(lambda: self._mass_compare_select_category('classical'))
+        helpers_layout.addWidget(select_classical_btn)
+        
+        select_dl_btn = QPushButton("DL Only")
+        select_dl_btn.clicked.connect(lambda: self._mass_compare_select_category('deep_learning'))
+        helpers_layout.addWidget(select_dl_btn)
+        
+        helpers_layout.addStretch()
+        controls_layout.addLayout(helpers_layout)
+        
+        # Control buttons
+        buttons_layout = QHBoxLayout()
+        
+        self.mass_compare_start_btn = QPushButton("🚀 Start Mass Compare")
+        self.mass_compare_start_btn.setStyleSheet(
+            "background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;"
+        )
+        self.mass_compare_start_btn.clicked.connect(self._on_mass_compare_start)
+        buttons_layout.addWidget(self.mass_compare_start_btn)
+        
+        self.mass_compare_stop_btn = QPushButton("⏹️ Stop Compare")
+        self.mass_compare_stop_btn.setStyleSheet(
+            "background-color: #f44336; color: white; font-weight: bold; padding: 10px;"
+        )
+        self.mass_compare_stop_btn.clicked.connect(self._on_mass_compare_stop)
+        self.mass_compare_stop_btn.setEnabled(False)
+        buttons_layout.addWidget(self.mass_compare_stop_btn)
+        
+        clear_btn = QPushButton("🗑️ Clear Results")
+        clear_btn.clicked.connect(self._on_mass_compare_clear)
+        buttons_layout.addWidget(clear_btn)
+        
+        buttons_layout.addStretch()
+        controls_layout.addLayout(buttons_layout)
+        
+        # Progress tracking
+        progress_group = QGroupBox("Progress")
+        progress_layout = QVBoxLayout(progress_group)
+        
+        self.mass_compare_progress = QProgressBar()
+        self.mass_compare_progress.setRange(0, 100)
+        progress_layout.addWidget(self.mass_compare_progress)
+        
+        self.mass_compare_status = QLabel("Ready to start mass comparison")
+        self.mass_compare_status.setAlignment(Qt.AlignCenter)
+        self.mass_compare_status.setStyleSheet("font-weight: bold; color: #FFA726;")
+        progress_layout.addWidget(self.mass_compare_status)
+        
+        self.mass_compare_current_algo = QLabel("")
+        self.mass_compare_current_algo.setAlignment(Qt.AlignCenter)
+        self.mass_compare_current_algo.setStyleSheet("color: #64B5F6;")
+        progress_layout.addWidget(self.mass_compare_current_algo)
+        
+        controls_layout.addWidget(progress_group)
+        layout.addWidget(controls_group)
+        
+        # Results plot
+        results_group = QGroupBox("Comparison Results")
+        results_layout = QVBoxLayout(results_group)
+        
+        # Create tabbed plots
+        plot_tabs = QTabWidget()
+        
+        # SNR Improvement Plot
+        self.mass_snr_plot = pg.PlotWidget()
+        self.mass_snr_plot.setLabel('left', 'SNR Improvement (dB)')
+        self.mass_snr_plot.setLabel('bottom', 'Time (seconds)')
+        self.mass_snr_plot.setTitle("SNR Improvement Over Time")
+        self.mass_snr_plot.addLegend()
+        self.mass_snr_plot.showGrid(x=True, y=True, alpha=0.3)
+        plot_tabs.addTab(self.mass_snr_plot, "📊 SNR Over Time")
+        
+        # Performance Comparison Plot
+        self.mass_perf_plot = pg.PlotWidget()
+        self.mass_perf_plot.setLabel('left', 'Processing Time (ms)')
+        self.mass_perf_plot.setLabel('bottom', 'Algorithm')
+        self.mass_perf_plot.setTitle("Processing Time Comparison")
+        self.mass_perf_plot.showGrid(x=True, y=True, alpha=0.3)
+        plot_tabs.addTab(self.mass_perf_plot, "⚡ Performance")
+        
+        # Summary Bar Chart
+        self.mass_summary_plot = pg.PlotWidget()
+        self.mass_summary_plot.setLabel('left', 'Average SNR Improvement (dB)')
+        self.mass_summary_plot.setLabel('bottom', 'Algorithm')
+        self.mass_summary_plot.setTitle("Final Summary Comparison")
+        self.mass_summary_plot.showGrid(x=True, y=True, alpha=0.3)
+        plot_tabs.addTab(self.mass_summary_plot, "🏆 Final Summary")
+        
+        results_layout.addWidget(plot_tabs)
+        
+        # Results table
+        self.mass_results_table = QTableWidget()
+        self.mass_results_table.setColumnCount(6)
+        self.mass_results_table.setHorizontalHeaderLabels([
+            "Algorithm", "Category", "Avg SNR (dB)", "Processing Time (ms)", "CPU %", "Memory (MB)"
+        ])
+        self.mass_results_table.horizontalHeader().setStretchLastSection(True)
+        self.mass_results_table.setMaximumHeight(200)
+        results_layout.addWidget(self.mass_results_table)
+        
+        layout.addWidget(results_group)
+        
+        return widget
+    
     def _get_audio_devices(self, kind: str) -> List[str]:
         """Get list of audio devices."""
         devices = sd.query_devices()
@@ -845,6 +1491,10 @@ class LiveDenoiserApp(QMainWindow):
         # Start
         self.engine.start()
         self.snr_start_time = time.time()
+        self.streaming = True
+        
+        # Initialize baseline SNR (will be calculated from initial noisy audio)
+        self.baseline_snr = 0.0  # Will be updated as we receive audio
         
         # Update UI
         self.start_btn.setEnabled(False)
@@ -854,6 +1504,11 @@ class LiveDenoiserApp(QMainWindow):
     def _on_stop(self):
         """Stop audio processing and freeze plots."""
         self.engine.stop()
+        self.streaming = False
+        
+        # Stop mass compare if running
+        if self.mass_compare_running:
+            self._stop_mass_compare()
         
         # Freeze current plot data
         self.frozen_waveform_data = (
@@ -877,12 +1532,22 @@ class LiveDenoiserApp(QMainWindow):
             self, "Save Plots", f"denoiser_plots_{timestamp}.png", "PNG Files (*.png)"
         )
         if filename:
-            # Export plots as images
-            # TODO: Implement proper multi-plot export
-            self.waveform_plot.grab().save(filename.replace('.png', '_waveform.png'))
-            self.spectrum_plot.grab().save(filename.replace('.png', '_spectrum.png'))
-            self.snr_plot.grab().save(filename.replace('.png', '_snr.png'))
+            # Export plots as images with white backgrounds
+            self._save_plot_with_white_bg(self.waveform_plot, filename.replace('.png', '_waveform.png'))
+            self._save_plot_with_white_bg(self.spectrum_plot, filename.replace('.png', '_spectrum.png'))
+            self._save_plot_with_white_bg(self.snr_plot, filename.replace('.png', '_snr.png'))
             self.status_bar.showMessage(f"Plots saved to {filename}")
+    
+    def _save_plot_with_white_bg(self, plot_widget, filename: str):
+        """Save a plot with white background for better publication quality."""
+        # Get the plot widget
+        exporter = pg.exporters.ImageExporter(plot_widget.plotItem)
+        
+        # Set white background
+        exporter.parameters()['background'] = 'w'
+        
+        # Export at high resolution
+        exporter.export(filename)
     
     def _on_run_comparison(self):
         """Run multi-algorithm comparison."""
@@ -1009,6 +1674,26 @@ class LiveDenoiserApp(QMainWindow):
         # Performance history
         self.perf_history.append(metrics.processing_time_ms)
         self.perf_curve.setData(list(range(len(self.perf_history))), list(self.perf_history))
+    
+    def _on_snr_update(self, snr_before: float, snr_after: float):
+        """Handle SNR updates for mass comparison tracking."""
+        if not self.mass_compare_running:
+            return
+        
+        # Get current algorithm being tested
+        if (self.current_algorithm_index < len(self.selected_algorithms) and 
+            self.selected_algorithms):
+            
+            algo_key = self.selected_algorithms[self.current_algorithm_index]
+            
+            if algo_key in self.mass_compare_results:
+                # Store SNR value
+                self.mass_compare_results[algo_key]['snr_values'].append(snr_after)
+                
+                # Store processing time if available
+                if hasattr(self.engine, 'metrics'):
+                    processing_time = self.engine.metrics.processing_time_ms
+                    self.mass_compare_results[algo_key]['processing_times'].append(processing_time)
     
     def _on_status_message(self, msg: str):
         """Update status bar."""

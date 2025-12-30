@@ -226,33 +226,58 @@ def _register_builtins():
     # Baseline
     DenoiserRegistry.register('passthrough', PassthroughDenoiser)
     
-    # Classical - Wavelet variants
+    # =========================================================================
+    # 1. SPECTRAL SUBTRACTION (Boll, 1979)
+    # =========================================================================
     try:
-        from .wavelet_denoiser import WaveletDenoiser
+        from .spectral_subtraction import SpectralSubtraction
         
-        DenoiserRegistry.register('wavelet_db4_soft', WaveletDenoiser,
-                                  wavelet='db4', threshold_mode='soft')
-        DenoiserRegistry.register('wavelet_db4_hard', WaveletDenoiser,
-                                  wavelet='db4', threshold_mode='hard')
-        DenoiserRegistry.register('wavelet_sym8_soft', WaveletDenoiser,
-                                  wavelet='sym8', threshold_mode='soft')
-        DenoiserRegistry.register('wavelet_coif3_soft', WaveletDenoiser,
-                                  wavelet='coif3', threshold_mode='soft')
-    except ImportError:
-        pass
+        # Single-band variants
+        DenoiserRegistry.register('ss_standard', SpectralSubtraction,
+                                  alpha=2.0, beta=0.01, multiband=False, adaptive=False)
+        DenoiserRegistry.register('ss_adaptive', SpectralSubtraction,
+                                  alpha=2.0, beta=0.01, multiband=False, adaptive=True)
+        
+        # Multi-band variants (better quality)
+        DenoiserRegistry.register('ss_multiband', SpectralSubtraction,
+                                  alpha=2.0, beta=0.01, multiband=True, adaptive=True)
+    except ImportError as e:
+        print(f"Failed to load SpectralSubtraction: {e}")
     
-    # Classical - Wiener variants
+    # =========================================================================
+    # 2. STANDARD WIENER FILTER
+    # =========================================================================
     try:
-        from .wiener_denoiser import WienerDenoiser, SpectralSubtraction
+        from .wiener_filter import WienerFilter
         
-        DenoiserRegistry.register('wiener_standard', WienerDenoiser,
+        DenoiserRegistry.register('wiener_standard', WienerFilter,
                                   alpha=1.0, beta=0.02)
-        DenoiserRegistry.register('wiener_aggressive', WienerDenoiser,
+        DenoiserRegistry.register('wiener_moderate', WienerFilter,
+                                  alpha=1.5, beta=0.02)
+        DenoiserRegistry.register('wiener_aggressive', WienerFilter,
                                   alpha=2.0, beta=0.01)
-        DenoiserRegistry.register('spectral_subtraction', SpectralSubtraction,
-                                  alpha=2.0, beta=0.01)
-    except ImportError:
-        pass
+    except ImportError as e:
+        print(f"Failed to load WienerFilter: {e}")
+    
+    # =========================================================================
+    # 3. ADAPTIVE WIENER FILTER (Decision-Directed + MMSE-STSA)
+    # =========================================================================
+    try:
+        from .adaptive_wiener import AdaptiveWienerFilter
+        
+        # Decision-Directed with simple Wiener gain
+        DenoiserRegistry.register('adaptive_dd_wiener', AdaptiveWienerFilter,
+                                  alpha=0.98, use_mmse=False, noise_tracking=True)
+        
+        # Full MMSE-STSA (best quality)
+        DenoiserRegistry.register('adaptive_mmse_stsa', AdaptiveWienerFilter,
+                                  alpha=0.98, use_mmse=True, noise_tracking=True)
+        
+        # Conservative MMSE (less aggressive)
+        DenoiserRegistry.register('adaptive_mmse_conservative', AdaptiveWienerFilter,
+                                  alpha=0.99, use_mmse=True, noise_tracking=False)
+    except ImportError as e:
+        print(f"Failed to load AdaptiveWienerFilter: {e}")
 
 
 # Initialize on import
