@@ -32,12 +32,10 @@ class FMModelLoader:
         'unet2d_stft': UNet2D_STFT,
     }
     
-    # Default model search paths (in order of priority)
+    # Default model search paths (only FinalModels - validated models)
     DEFAULT_SEARCH_PATHS = [
         'saved_models/FM/FinalModels/FM_Final_1DUNET',
         'saved_models/FM/FinalModels/FM_Final_STFT',
-        'saved_models/FM/models',
-        'saved_models/FM',
     ]
     
     @staticmethod
