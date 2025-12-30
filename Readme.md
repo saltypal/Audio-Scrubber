@@ -127,8 +127,8 @@ File: [src/fm/1dunet/backshot.py](src/fm/1dunet/backshot.py)
 ---
 
 ## Configuration
-- Primary config: [config.py](config.py)  paths, audio params, training defaults, RTL-SDR/VB-CABLE settings, model defaults, chunk sizes.
-- Alt config: [config/config.py](config/config.py)  same structure, different FM model path mapping.
+- Primary config: [config.py](config.py) - paths, audio params, training defaults, RTL-SDR/VB-CABLE settings, model defaults, chunk sizes.
+- Alt config: [config/config.py](config/config.py) - same structure, different FM model path mapping.
 
 ---
 
